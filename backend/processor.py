@@ -1,0 +1,81 @@
+import os
+from dotenv import load_dotenv
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import PromptTemplate
+import json
+
+# Load environment variables
+load_dotenv()
+
+def get_llm():
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        print("❌ GOOGLE_API_KEY not found in environment variables.")
+        return None
+    
+    return ChatGoogleGenerativeAI(
+        model="gemini-flash-latest", 
+        temperature=0,
+        google_api_key=api_key
+    )
+
+def analyze_text(text):
+    """
+    Analyzes text to extract entities (nodes) and relationships (edges).
+    Returns a JSON object with 'nodes' and 'edges'.
+    """
+    
+    llm = get_llm()
+    if not llm:
+        return {"nodes": [], "edges": []}
+
+    template = """
+    You are the Keeper of Manuth's Second Brain.
+    Structure thoughts into a Hierarchical Graph.
+    RULES:
+
+    ROOT: "Manuth".
+
+    CATEGORIES: Relations, Ideas, Own, Buying List, Knowledge.
+
+    CRITICAL LOGIC FOR POSSESSIONS:
+
+    If an item belongs to "Manuth", link: Manuth -> Own -> Item.
+
+    IF AN ITEM BELONGS TO SOMEONE ELSE (e.g., "Adeesha has a Samsung Phone"):
+
+    First, link the Person to Manuth: Manuth -> Relations -> "Adeesha".
+
+    Then, link the Item to THAT PERSON: "Adeesha" -> OWNS -> "Samsung Phone".
+
+    DO NOT link Adeesha's phone to Manuth's "Own" category.
+
+    Input Text: {text} 
+    Return JSON with 'nodes' and 'edges'. 
+    """
+    
+    prompt = PromptTemplate(template=template, input_variables=["text"])
+    chain = prompt | llm
+    
+    try:
+        response = chain.invoke({"text": text})
+        # Clean up response if it contains markdown formatting
+        content = response.content.strip()
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.endswith("```"):
+            content = content[:-3]
+            
+        return json.loads(content)
+    except Exception as e:
+        print(f"Error processing text: {e}")
+        return {"nodes": [], "edges": []}
+
+if __name__ == "__main__":
+    # Test with a sample sentence
+    sample_text = "Elon Musk started SpaceX."
+    print(f"Analyzing: '{sample_text}'")
+    
+    result = analyze_text(sample_text)
+    print("\nExtracted Data:")
+    print(json.dumps(result, indent=2))

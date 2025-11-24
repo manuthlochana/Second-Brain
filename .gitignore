@@ -1,0 +1,20 @@
+# Environment Variables
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+
+# Node.js / Next.js
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# System
+.DS_Store
+Thumbs.db

@@ -1,0 +1,7 @@
+streamlit
+langchain
+langchain-google-genai
+python-dotenv
+neo4j
+pinecone
+streamlit-agraph
