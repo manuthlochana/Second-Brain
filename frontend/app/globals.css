@@ -24,6 +24,38 @@
   }
 }
 
+@layer base {
+
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+    /* Stop the whole page from scrolling */
+  }
+}
+
+/* Custom Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f172a;
+  /* Dark background matching app */
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  /* Visible Grey color */
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+  /* Lighter on hover */
+}
+
 body {
   background: var(--background);
   color: var(--foreground);

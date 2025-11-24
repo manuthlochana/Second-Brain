@@ -82,7 +82,7 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
     };
 
     return (
-        <div className="flex flex-col h-full bg-card-dark border-r border-slate-800 relative z-10">
+        <div className="h-full flex flex-col overflow-hidden bg-card-dark border-r border-slate-800 relative z-10">
             {/* Header & Mode Toggle */}
             <div className="p-4 border-b border-slate-800 flex-none">
                 <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
@@ -111,7 +111,7 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
             </div>
 
             {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 scrollbar-thumb-slate-700 scrollbar-track-transparent">
                 {messages.length === 0 && (
                     <div className="text-center text-slate-500 mt-10">
                         <p>Select a mode and start interacting with your Second Brain.</p>
@@ -145,7 +145,7 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
             </div>
 
             {/* Input Area */}
-            <div className="p-4 border-t border-slate-800 bg-card-dark flex-none">
+            <div className="p-4 border-t border-slate-800 bg-card-dark flex-none z-20">
                 <form onSubmit={handleSubmit} className="relative">
                     <input
                         type="text"
