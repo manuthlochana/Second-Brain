@@ -10,7 +10,11 @@ type Message = {
     content: string;
 };
 
-export default function ChatPanel() {
+interface ChatPanelProps {
+    onInsertSuccess?: () => void;
+}
+
+export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
     const [mode, setMode] = useState<"query" | "insert">("query");
     const [input, setInput] = useState("");
     const [messages, setMessages] = useState<Message[]>([]);
@@ -62,6 +66,7 @@ export default function ChatPanel() {
             } else {
                 const data = await saveMemory(userMsg);
                 response = `Saved! Extracted ${data.nodes.length} entities.`;
+                if (onInsertSuccess) onInsertSuccess();
             }
 
             setMessages((prev) => [...prev, { role: "assistant", content: response }]);

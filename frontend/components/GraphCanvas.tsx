@@ -19,6 +19,7 @@ const NODE_COLORS = ['#FF5733', '#33FF57', '#3357FF', '#FF33A8', '#A833FF', '#33
 export default function GraphCanvas({ refreshKey }: { refreshKey: number }) {
     const [graphData, setGraphData] = useState({ nodes: [], links: [] });
     const [loading, setLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState("");
     const containerRef = useRef<HTMLDivElement>(null);
     const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
 
@@ -68,6 +69,16 @@ export default function GraphCanvas({ refreshKey }: { refreshKey: number }) {
 
     return (
         <div ref={containerRef} className="w-full h-full bg-bg-dark relative overflow-hidden">
+            {/* Search Bar */}
+            <div className="absolute top-4 left-4 z-20">
+                <input
+                    type="text"
+                    placeholder="🔍 Find Node..."
+                    className="bg-slate-900/80 text-white p-2 rounded-lg border border-slate-700 backdrop-blur-sm focus:outline-none focus:border-accent text-sm w-48"
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                />
+            </div>
+
             {loading && (
                 <div className="absolute inset-0 flex items-center justify-center z-10 bg-bg-dark/80 backdrop-blur-sm">
                     <div className="text-accent animate-pulse font-mono">
@@ -95,6 +106,18 @@ export default function GraphCanvas({ refreshKey }: { refreshKey: number }) {
                         const label = node.name || node.id;
                         const fontSize = 12 / globalScale;
                         ctx.font = `${fontSize}px Sans-Serif`;
+
+                        // Check for Search Match
+                        const isMatch = searchTerm && label.toLowerCase().includes(searchTerm.toLowerCase());
+
+                        if (isMatch) {
+                            // Draw Neon Green Ring
+                            ctx.beginPath();
+                            ctx.arc(node.x, node.y, 8, 0, 2 * Math.PI, false);
+                            ctx.strokeStyle = '#39ff14'; // Neon Green
+                            ctx.lineWidth = 2 / globalScale;
+                            ctx.stroke();
+                        }
 
                         // --- SPECIAL LOGIC FOR ROOT USER ---
                         if (label === "Manuth") {

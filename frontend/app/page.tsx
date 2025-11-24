@@ -8,10 +8,10 @@ export default function Home() {
   const [refreshKey, setRefreshKey] = useState(0);
 
   return (
-    <main className="grid grid-cols-12 h-screen bg-bg-dark text-white overflow-hidden">
+    <main className="grid grid-cols-12 h-[100dvh] bg-bg-dark text-white overflow-hidden">
       {/* Left Column: Chat Interface */}
       <div className="col-span-4 h-full border-r border-slate-800">
-        <ChatPanel />
+        <ChatPanel onInsertSuccess={() => setRefreshKey((k) => k + 1)} />
       </div>
 
       {/* Right Column: Knowledge Graph */}
