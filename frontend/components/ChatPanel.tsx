@@ -82,36 +82,37 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
     };
 
     return (
-        <div className="h-full flex flex-col overflow-hidden bg-card-dark border-r border-slate-800 relative z-10">
-            {/* Header & Mode Toggle */}
-            <div className="p-4 border-b border-slate-800 flex-none">
-                <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+        // MAIN CONTAINER: Fixed height, Flex Column
+        <div className="flex flex-col h-full bg-slate-900 border-r border-white/10 overflow-hidden">
+            {/* 1. HEADER: Fixed Size (flex-none) */}
+            <div className="flex-none p-4 border-b border-white/10 flex items-center justify-between bg-slate-900 z-10">
+                <h2 className="text-xl font-bold text-white flex items-center gap-2">
                     <span className="text-accent">●</span> Second Brain
                 </h2>
-                <div className="flex bg-slate-900 p-1 rounded-lg">
+                <div className="flex bg-slate-800 p-1 rounded-lg">
                     <button
                         onClick={() => setMode("query")}
-                        className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-medium transition-all ${mode === "query"
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${mode === "query"
                             ? "bg-accent text-white shadow-lg"
                             : "text-slate-400 hover:text-white"
                             }`}
                     >
-                        <MessageSquare size={16} /> Chat
+                        <MessageSquare size={14} /> Chat
                     </button>
                     <button
                         onClick={() => setMode("insert")}
-                        className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-medium transition-all ${mode === "insert"
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${mode === "insert"
                             ? "bg-emerald-600 text-white shadow-lg"
                             : "text-slate-400 hover:text-white"
                             }`}
                     >
-                        <Database size={16} /> Insert
+                        <Database size={14} /> Insert
                     </button>
                 </div>
             </div>
 
-            {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 scrollbar-thumb-slate-700 scrollbar-track-transparent">
+            {/* 2. MESSAGES AREA: Flexible (flex-1) & Scrollable */}
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
                 {messages.length === 0 && (
                     <div className="text-center text-slate-500 mt-10">
                         <p>Select a mode and start interacting with your Second Brain.</p>
@@ -144,15 +145,15 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* Input Area */}
-            <div className="p-4 border-t border-slate-800 bg-card-dark flex-none z-20">
+            {/* 3. INPUT AREA: Fixed Size (flex-none) */}
+            <div className="flex-none p-4 border-t border-white/10 bg-slate-900 z-10">
                 <form onSubmit={handleSubmit} className="relative">
                     <input
                         type="text"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         placeholder={mode === "query" ? "Ask something..." : "Save a memory..."}
-                        className="w-full bg-slate-900 text-white placeholder-slate-500 rounded-xl py-3 pl-4 pr-12 focus:outline-none focus:ring-2 focus:ring-accent/50 border border-slate-800"
+                        className="w-full bg-slate-950 text-white placeholder-slate-500 rounded-xl py-3 pl-4 pr-12 focus:outline-none focus:ring-2 focus:ring-accent/50 border border-slate-800"
                     />
                     <button
                         type="submit"
