@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Database, MessageSquare } from "lucide-react";
+import { Database, MessageSquare } from "lucide-react";
 import { motion } from "framer-motion";
 import { sendMessage, saveMemory } from "../lib/api";
+import ChatInput from "./ChatInput";
 
 type Message = {
     role: "user" | "assistant";
@@ -16,7 +17,6 @@ interface ChatPanelProps {
 
 export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
     const [mode, setMode] = useState<"query" | "insert">("query");
-    const [input, setInput] = useState("");
     const [messages, setMessages] = useState<Message[]>([]);
     const [loading, setLoading] = useState(false);
     const STORAGE_KEY = 'second_brain_chat_history';
@@ -49,12 +49,8 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
         scrollToBottom();
     }, [messages]);
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!input.trim()) return;
-
-        const userMsg = input;
-        setInput("");
+    const handleSendMessage = async (text: string) => {
+        const userMsg = text;
         setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
         setLoading(true);
 
@@ -82,10 +78,9 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
     };
 
     return (
-        // MAIN CONTAINER: Fixed height, Flex Column
-        <div className="flex flex-col h-full bg-slate-900 border-r border-white/10 overflow-hidden">
-            {/* 1. HEADER: Fixed Size (flex-none) */}
-            <div className="flex-none p-4 border-b border-white/10 flex items-center justify-between bg-slate-900 z-10">
+        <div className="flex flex-col h-full w-full bg-slate-950 overflow-hidden">
+            {/* HEADER: Rigid, Fixed Height */}
+            <div className="flex-none h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 z-20 shadow-md">
                 <h2 className="text-xl font-bold text-white flex items-center gap-2">
                     <span className="text-accent">●</span> Second Brain
                 </h2>
@@ -111,8 +106,8 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
                 </div>
             </div>
 
-            {/* 2. MESSAGES AREA: Flexible (flex-1) & Scrollable */}
-            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+            {/* MESSAGES: Flexible, Scrollable */}
+            <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 scroll-smooth">
                 {messages.length === 0 && (
                     <div className="text-center text-slate-500 mt-10">
                         <p>Select a mode and start interacting with your Second Brain.</p>
@@ -145,25 +140,12 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* 3. INPUT AREA: Fixed Size (flex-none) */}
-            <div className="flex-none p-4 border-t border-white/10 bg-slate-900 z-10">
-                <form onSubmit={handleSubmit} className="relative">
-                    <input
-                        type="text"
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        placeholder={mode === "query" ? "Ask something..." : "Save a memory..."}
-                        className="w-full bg-slate-950 text-white placeholder-slate-500 rounded-xl py-3 pl-4 pr-12 focus:outline-none focus:ring-2 focus:ring-accent/50 border border-slate-800"
-                    />
-                    <button
-                        type="submit"
-                        disabled={!input.trim() || loading}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-accent text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                    >
-                        <Send size={18} />
-                    </button>
-                </form>
-            </div>
+            {/* INPUT: Separate Component, Fixed at Bottom */}
+            <ChatInput
+                onSendMessage={handleSendMessage}
+                loading={loading}
+                mode={mode}
+            />
         </div>
     );
 }
