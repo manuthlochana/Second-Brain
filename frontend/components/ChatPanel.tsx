@@ -107,7 +107,10 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
             </div>
 
             {/* MESSAGES: Flexible, Scrollable */}
-            <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 scroll-smooth">
+            <div
+                className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 scroll-smooth"
+                style={{ minHeight: 0 }}
+            >
                 {messages.length === 0 && (
                     <div className="text-center text-slate-500 mt-10">
                         <p>Select a mode and start interacting with your Second Brain.</p>
