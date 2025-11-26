@@ -59,7 +59,8 @@
 
   /* Modern Scrollbar based on user reference */
   ::-webkit-scrollbar {
-    width: 12px;
+    width: 8px;
+    height: 8px;
   }
 
   ::-webkit-scrollbar-track {
@@ -67,14 +68,14 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 10px;
-    border: 3px solid #0f172a;
+    background: #334155;
+    border-radius: 4px;
+    border: 2px solid #0f172a;
     /* Padding effect */
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.3);
+    background: #475569;
   }
 }
 
