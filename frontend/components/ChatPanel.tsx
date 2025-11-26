@@ -106,10 +106,10 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
                 </div>
             </div>
 
-            {/* MESSAGES: Flexible, Scrollable */}
+            {/* MESSAGES: Scrollable Area with explicit height calculation */}
             <div
-                className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 scroll-smooth"
-                style={{ minHeight: 0 }}
+                className="overflow-y-auto p-4 space-y-4 scroll-smooth"
+                style={{ height: 'calc(100% - 144px)' }}
             >
                 {messages.length === 0 && (
                     <div className="text-center text-slate-500 mt-10">
