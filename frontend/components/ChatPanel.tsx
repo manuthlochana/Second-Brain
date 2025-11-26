@@ -78,9 +78,10 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
     };
 
     return (
+        // FIX 1: Change to Grid Layout (Fixed Header/Input, Flexible Middle)
         <div className="flex flex-col h-full w-full bg-slate-950 overflow-hidden">
             {/* HEADER: Rigid, Fixed Height */}
-            <div className="flex-none h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 z-20 shadow-md">
+            <div className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 z-20 shadow-md">
                 <h2 className="text-xl font-bold text-white flex items-center gap-2">
                     <span className="text-accent">●</span> Second Brain
                 </h2>
@@ -106,10 +107,10 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
                 </div>
             </div>
 
-            {/* MESSAGES: Flexible, Scrollable */}
+            {/* MESSAGES: Use calc() for definitive height: 100% - (h-16 Header) - (h-20 Input) = 100% - 144px */}
             <div
-                className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 scroll-smooth"
-                style={{ minHeight: 0, flexShrink: 1 }}
+                className="overflow-y-auto p-4 space-y-4 scroll-smooth"
+                style={{ height: 'calc(100% - 144px)' }}
             >
                 {messages.length === 0 && (
                     <div className="text-center text-slate-500 mt-10">
@@ -143,7 +144,7 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* INPUT: Separate Component, Fixed at Bottom */}
+            {/* INPUT: Input component call */}
             <ChatInput
                 onSendMessage={handleSendMessage}
                 loading={loading}

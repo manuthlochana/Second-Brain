@@ -20,7 +20,7 @@ export default function ChatInput({ onSendMessage, loading, mode }: ChatInputPro
     };
 
     return (
-        <div className="flex-none h-20 bg-slate-900 border-t border-slate-800 p-4 z-20">
+        <div className="h-20 bg-slate-900 border-t border-slate-800 p-4 z-20">
             <form onSubmit={handleSubmit} className="relative h-full flex items-center">
                 <input
                     type="text"
