@@ -107,10 +107,9 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
                 </div>
             </div>
 
-            {/* MESSAGES: Use calc() for definitive height: 100% - (h-16 Header) - (h-20 Input) = 100% - 144px */}
+            {/* MESSAGES: The Final Fix - Must be flex-grow and h-0 */}
             <div
-                className="overflow-y-auto p-4 space-y-4 scroll-smooth"
-                style={{ height: 'calc(100% - 144px)' }}
+                className="flex-grow h-0 overflow-y-auto p-4 space-y-4 scroll-smooth"
             >
                 {messages.length === 0 && (
                     <div className="text-center text-slate-500 mt-10">
