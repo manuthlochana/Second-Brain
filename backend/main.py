@@ -83,32 +83,35 @@ async def get_graph():
         node_ids = set()
         
         with driver.session() as session:
-            result = session.run("MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 100")
+            # Use OPTIONAL MATCH to get all nodes, even those without relationships
+            result = session.run("MATCH (n) OPTIONAL MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 100")
             
             for record in result:
                 source = record["n"]
-                target = record["m"]
                 relation = record["r"]
+                target = record["m"]
                 
                 source_id = source.element_id if hasattr(source, 'element_id') else str(source.id)
-                target_id = target.element_id if hasattr(target, 'element_id') else str(target.id)
-                
                 source_name = source.get("name", "Unknown")
-                target_name = target.get("name", "Unknown")
                 
                 if source_id not in node_ids:
                     nodes.append({"id": source_id, "name": source_name, "val": 1})
                     node_ids.add(source_id)
+                
+                # If there is a relationship, process target and link
+                if relation is not None and target is not None:
+                    target_id = target.element_id if hasattr(target, 'element_id') else str(target.id)
+                    target_name = target.get("name", "Unknown")
                     
-                if target_id not in node_ids:
-                    nodes.append({"id": target_id, "name": target_name, "val": 1})
-                    node_ids.add(target_id)
-                    
-                links.append({
-                    "source": source_id,
-                    "target": target_id,
-                    "label": relation.type
-                })
+                    if target_id not in node_ids:
+                        nodes.append({"id": target_id, "name": target_name, "val": 1})
+                        node_ids.add(target_id)
+                        
+                    links.append({
+                        "source": source_id,
+                        "target": target_id,
+                        "label": relation.type
+                    })
                 
         return {"nodes": nodes, "links": links}
     except Exception as e:

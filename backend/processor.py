@@ -29,29 +29,37 @@ def analyze_text(text):
     if not llm:
         return {"nodes": [], "edges": []}
 
+    # UPDATED PROMPT TO ENFORCE LIST FORMAT
     template = """
     You are the Keeper of Manuth's Second Brain.
     Structure thoughts into a Hierarchical Graph.
+    
     RULES:
-
     ROOT: "Manuth".
-
     CATEGORIES: Relations, Ideas, Own, Buying List, Knowledge.
 
     CRITICAL LOGIC FOR POSSESSIONS:
-
     If an item belongs to "Manuth", link: Manuth -> Own -> Item.
-
     IF AN ITEM BELONGS TO SOMEONE ELSE (e.g., "Adeesha has a Samsung Phone"):
-
     First, link the Person to Manuth: Manuth -> Relations -> "Adeesha".
-
     Then, link the Item to THAT PERSON: "Adeesha" -> OWNS -> "Samsung Phone".
 
-    DO NOT link Adeesha's phone to Manuth's "Own" category.
+    IMPORTANT OUTPUT FORMAT:
+    You must return a valid JSON object.
+    - 'nodes': A list of strings.
+    - 'edges': A list of lists, where each list is strictly ["Source", "Relation", "Target"].
+
+    Example Output:
+    {{
+      "nodes": ["Manuth", "Own", "Bike"],
+      "edges": [
+        ["Manuth", "HAS_CATEGORY", "Own"],
+        ["Own", "CONTAINS", "Bike"]
+      ]
+    }}
 
     Input Text: {text} 
-    Return JSON with 'nodes' and 'edges'. 
+    Return ONLY the JSON string. Do not add Markdown formatting.
     """
     
     prompt = PromptTemplate(template=template, input_variables=["text"])
@@ -77,5 +85,5 @@ if __name__ == "__main__":
     print(f"Analyzing: '{sample_text}'")
     
     result = analyze_text(sample_text)
-    print("\nExtracted Data:")
+    print("\\nExtracted Data:")
     print(json.dumps(result, indent=2))

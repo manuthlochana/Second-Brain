@@ -1,4 +1,4 @@
-const API_URL = "http://localhost:8002";
+const API_URL = "http://localhost:8000";
 
 export async function sendMessage(message: string) {
     const response = await fetch(`${API_URL}/chat`, {
