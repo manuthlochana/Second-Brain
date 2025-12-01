@@ -5,3 +5,7 @@ langchain-google-genai
 neo4j
 pinecone
 pydantic
+supabase
+langgraph
+tavily-python
+langchain-community

@@ -37,39 +37,24 @@ class InsertRequest(BaseModel):
 
 # Endpoints
 
+import brain
+
+# ... (keep existing imports and setup)
+
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
     try:
-        # 1. Search Memory (RAG)
-        context = database.search_memory(request.message)
+        # Process the thought through the LangGraph Brain
+        result = brain.process_thought(request.message)
         
-        # 2. Construct Prompt
-        if context:
-            rag_prompt = f"Context from memory:\n{context}\n\nUser Question: {request.message}\n\nAnswer the question using the context provided."
-        else:
-            rag_prompt = request.message
-            
-        # 3. Generate Response
-        response = llm.invoke(rag_prompt)
-        return {"answer": response.content, "context": context}
+        return {
+            "answer": result["final_answer"],
+            "context": result.get("memory_context") or result.get("web_context") or ""
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/insert")
-async def insert_endpoint(request: InsertRequest):
-    try:
-        # 1. Extract Entities
-        result = processor.analyze_text(request.text)
-        
-        # 2. Save to Graph
-        database.save_to_graph(result)
-        
-        # 3. Save to Vector
-        database.save_to_vector(request.text)
-        
-        return {"status": "saved", "nodes": result.get("nodes", [])}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Removed /insert endpoint as it is now handled by the brain's intent classification
 
 @app.get("/graph")
 async def get_graph():
