@@ -19,7 +19,7 @@ def get_llm():
         google_api_key=api_key
     )
 
-def analyze_text(text):
+def analyze_text(text, existing_nodes=None):
     """
     Analyzes text to extract entities (nodes) and relationships (edges).
     Returns a JSON object with 'nodes' and 'edges'.
@@ -28,6 +28,8 @@ def analyze_text(text):
     llm = get_llm()
     if not llm:
         return {"nodes": [], "edges": []}
+
+    existing_nodes_str = ", ".join(existing_nodes) if existing_nodes else "None"
 
     # UPDATED PROMPT TO ENFORCE LIST FORMAT
     template = """
@@ -38,11 +40,19 @@ def analyze_text(text):
     ROOT: "Manuth".
     CATEGORIES: Relations, Ideas, Own, Buying List, Knowledge.
 
+    EXISTING NODES:
+    {existing_nodes}
+
     CRITICAL LOGIC FOR POSSESSIONS:
     If an item belongs to "Manuth", link: Manuth -> Own -> Item.
     IF AN ITEM BELONGS TO SOMEONE ELSE (e.g., "Adeesha has a Samsung Phone"):
     First, link the Person to Manuth: Manuth -> Relations -> "Adeesha".
     Then, link the Item to THAT PERSON: "Adeesha" -> OWNS -> "Samsung Phone".
+
+    SMART LINKING:
+    Check the 'EXISTING NODES' list above.
+    If a mentioned entity matches or is very similar to an existing node, reuse that EXACT name to ensure connection.
+    Do not create duplicates. (e.g., if "Samsung A06" exists, use "Samsung A06" instead of "Phone").
 
     IMPORTANT OUTPUT FORMAT:
     You must return a valid JSON object.
@@ -62,11 +72,11 @@ def analyze_text(text):
     Return ONLY the JSON string. Do not add Markdown formatting.
     """
     
-    prompt = PromptTemplate(template=template, input_variables=["text"])
+    prompt = PromptTemplate(template=template, input_variables=["text", "existing_nodes"])
     chain = prompt | llm
     
     try:
-        response = chain.invoke({"text": text})
+        response = chain.invoke({"text": text, "existing_nodes": existing_nodes_str})
         # Clean up response if it contains markdown formatting
         content = response.content.strip()
         if content.startswith("```json"):

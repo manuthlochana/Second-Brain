@@ -85,8 +85,11 @@ def inserter_agent(state: AgentState):
     print("✍️ Inserter Agent: Saving memory...")
     text = state["user_input"]
     
-    # 1. Extract Entities (Graph)
-    graph_data = processor.analyze_text(text)
+    # 1. Smart Linking: Find existing similar nodes
+    existing_nodes = database.find_similar_nodes(text)
+    
+    # 2. Extract Entities (Graph) with context
+    graph_data = processor.analyze_text(text, existing_nodes=existing_nodes)
     database.save_to_graph(graph_data)
     
     # 2. Save Vector

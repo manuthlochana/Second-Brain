@@ -28,6 +28,47 @@ def get_neo4j_driver():
         print(f"❌ Failed to create driver: {e}")
         return None
 
+def find_similar_nodes(query: str) -> list[str]:
+    """
+    Searches Neo4j for nodes that might be relevant to the user's input.
+    Uses a simple case-insensitive CONTAINS search on the 'name' property.
+    """
+    print(f"🔍 Searching for similar nodes to: '{query}'")
+    driver = get_neo4j_driver()
+    if not driver:
+        return []
+
+    found_nodes = set()
+    
+    # Split query into words and filter out short words/stopwords
+    words = [w for w in query.split() if len(w) > 3]
+    
+    if not words:
+        return []
+
+    try:
+        with driver.session() as session:
+            for word in words:
+                # Cypher query to find nodes containing the word (case-insensitive)
+                # We limit to 5 matches per word to avoid context flooding
+                cypher = """
+                MATCH (n:Entity)
+                WHERE toLower(n.name) CONTAINS toLower($word)
+                RETURN n.name AS name LIMIT 5
+                """
+                result = session.run(cypher, word=word)
+                for record in result:
+                    found_nodes.add(record["name"])
+                    
+        print(f"✅ Found {len(found_nodes)} similar nodes: {list(found_nodes)}")
+        return list(found_nodes)
+        
+    except Exception as e:
+        print(f"❌ Error searching for nodes: {e}")
+        return []
+    finally:
+        driver.close()
+
 def save_to_graph(data):
     """
     Saves extracted nodes and edges to Neo4j.
