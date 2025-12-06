@@ -19,7 +19,7 @@ def get_llm():
         google_api_key=api_key
     )
 
-def analyze_text(text, existing_nodes=None):
+def analyze_text(text, context_subgraph=None):
     """
     Analyzes text to extract entities (nodes) and relationships (edges).
     Returns a JSON object with 'nodes' and 'edges'.
@@ -29,7 +29,7 @@ def analyze_text(text, existing_nodes=None):
     if not llm:
         return {"nodes": [], "edges": []}
 
-    existing_nodes_str = ", ".join(existing_nodes) if existing_nodes else "None"
+    context_str = context_subgraph if context_subgraph else "None"
 
     # UPDATED PROMPT TO ENFORCE LIST FORMAT
     template = """
@@ -40,8 +40,8 @@ def analyze_text(text, existing_nodes=None):
     ROOT: "Manuth".
     CATEGORIES: Relations, Ideas, Own, Buying List, Knowledge.
 
-    EXISTING NODES:
-    {existing_nodes}
+    CONTEXT SUBGRAPH (Existing Memories):
+    {context_subgraph}
 
     CRITICAL LOGIC FOR POSSESSIONS:
     If an item belongs to "Manuth", link: Manuth -> Own -> Item.
@@ -49,10 +49,14 @@ def analyze_text(text, existing_nodes=None):
     First, link the Person to Manuth: Manuth -> Relations -> "Adeesha".
     Then, link the Item to THAT PERSON: "Adeesha" -> OWNS -> "Samsung Phone".
 
-    SMART LINKING:
-    Check the 'EXISTING NODES' list above.
-    If a mentioned entity matches or is very similar to an existing node, reuse that EXACT name to ensure connection.
-    Do not create duplicates. (e.g., if "Samsung A06" exists, use "Samsung A06" instead of "Phone").
+    ASSOCIATIVE MEMORY (GraphRAG):
+    Use the 'CONTEXT SUBGRAPH' to understand the current state of entities.
+    If the user's input relates to these existing nodes, connect them logically.
+    
+    CRITICAL RULE:
+    You MUST reuse the EXACT node names from the 'CONTEXT SUBGRAPH' if they are relevant.
+    Example: If context has "Galaxy S99", and user says "Galaxy", you MUST use "Galaxy S99".
+    Do NOT create new nodes like "Galaxy" or "Phone" if a specific one exists in context.
 
     IMPORTANT OUTPUT FORMAT:
     You must return a valid JSON object.
@@ -72,11 +76,11 @@ def analyze_text(text, existing_nodes=None):
     Return ONLY the JSON string. Do not add Markdown formatting.
     """
     
-    prompt = PromptTemplate(template=template, input_variables=["text", "existing_nodes"])
+    prompt = PromptTemplate(template=template, input_variables=["text", "context_subgraph"])
     chain = prompt | llm
     
     try:
-        response = chain.invoke({"text": text, "existing_nodes": existing_nodes_str})
+        response = chain.invoke({"text": text, "context_subgraph": context_str})
         # Clean up response if it contains markdown formatting
         content = response.content.strip()
         if content.startswith("```json"):

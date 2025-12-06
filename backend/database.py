@@ -69,6 +69,122 @@ def find_similar_nodes(query: str) -> list[str]:
     finally:
         driver.close()
 
+def save_node_embedding(node_name):
+    """
+    Embeds the node name and saves it to Pinecone with id=node_name.
+    This allows us to find nodes by semantic similarity.
+    """
+    print(f"Saving Node Embedding: '{node_name}'")
+    pinecone_api_key = os.getenv("PINECONE_API_KEY")
+    if not pinecone_api_key:
+        return
+
+    try:
+        embeddings = get_embeddings()
+        vector = embeddings.embed_query(node_name)
+        
+        pc = Pinecone(api_key=pinecone_api_key)
+        indexes = pc.list_indexes()
+        index_names = [i.name for i in indexes] if hasattr(indexes, 'names') else [i['name'] for i in indexes] if isinstance(indexes, list) else indexes
+        
+        if not index_names:
+            return
+            
+        index = pc.Index(index_names[0])
+        
+        # Upsert with ID = Node Name
+        index.upsert(
+            vectors=[
+                {
+                    "id": node_name, # Key difference: ID is the node name itself
+                    "values": vector,
+                    "metadata": {"type": "node", "text": node_name}
+                }
+            ]
+        )
+        print(f"✅ Node embedding saved for '{node_name}'")
+        
+    except Exception as e:
+        print(f"❌ Error saving node embedding: {e}")
+
+def get_context_subgraph(query_text: str) -> str:
+    """
+    GraphRAG:
+    1. Vector Search Pinecone for similar nodes.
+    2. Fetch subgraph (Node + 1-hop neighbors) from Neo4j.
+    3. Return natural language summary.
+    """
+    print(f"🕸️ GraphRAG: Retrieving context for '{query_text}'")
+    
+    # Step A: Vector Search
+    pinecone_api_key = os.getenv("PINECONE_API_KEY")
+    if not pinecone_api_key:
+        return ""
+        
+    matched_nodes = []
+    try:
+        embeddings = get_embeddings()
+        vector = embeddings.embed_query(query_text)
+        
+        pc = Pinecone(api_key=pinecone_api_key)
+        indexes = pc.list_indexes()
+        index_names = [i.name for i in indexes] if hasattr(indexes, 'names') else [i['name'] for i in indexes] if isinstance(indexes, list) else indexes
+        
+        if index_names:
+            index = pc.Index(index_names[0])
+            results = index.query(vector=vector, top_k=3, include_metadata=True)
+            
+            for match in results.matches:
+                # We assume ID is the node name (from save_node_embedding)
+                # Or we can use metadata['text']
+                node_name = match.id
+                matched_nodes.append(node_name)
+                
+    except Exception as e:
+        print(f"❌ Vector search failed: {e}")
+        return ""
+        
+    if not matched_nodes:
+        print("   - No similar nodes found in vector DB.")
+        return ""
+        
+    print(f"   - Found similar nodes: {matched_nodes}")
+    
+    # Step B: Graph Traversal
+    driver = get_neo4j_driver()
+    if not driver:
+        return ""
+        
+    subgraph_facts = []
+    try:
+        with driver.session() as session:
+            # Cypher to get node and its immediate relationships
+            # We match nodes where 'name' is in our matched list
+            cypher = """
+            MATCH (n:Entity)-[r]-(m:Entity)
+            WHERE n.name IN $names
+            RETURN n.name AS source, type(r) AS relation, m.name AS target
+            LIMIT 20
+            """
+            result = session.run(cypher, names=matched_nodes)
+            
+            for record in result:
+                fact = f"{record['source']} {record['relation']} {record['target']}"
+                subgraph_facts.append(fact)
+                
+    except Exception as e:
+        print(f"❌ Graph traversal failed: {e}")
+    finally:
+        driver.close()
+        
+    # Step C: Formatter
+    if not subgraph_facts:
+        return ""
+        
+    context_str = "Context found:\n" + "\n".join(subgraph_facts)
+    print(f"✅ GraphRAG Context:\n{context_str}")
+    return context_str
+
 def save_to_graph(data):
     """
     Saves extracted nodes and edges to Neo4j.

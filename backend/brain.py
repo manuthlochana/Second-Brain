@@ -59,17 +59,50 @@ def listener_agent(state: AgentState):
     return {"intent": intent}
 
 def researcher_agent(state: AgentState):
-    """Fetches information from the web using Tavily."""
+    """Fetches information from the web using Tavily with Context-Awareness."""
     print("🕵️ Researcher Agent: Searching the web...")
+    
+    # 1. Recall Context
+    print("   - Recalling memory context...")
+    memory_context = database.search_memory(state["user_input"])
+    
+    # 2. Refine Query
+    print("   - Refining search query...")
+    llm = get_llm()
+    template = """
+    You are a Search Query Optimizer.
+    Refine the user's search query to be specific based on the provided memory context.
+    
+    User Query: {input}
+    Memory Context: {context}
+    
+    Task: Replace vague terms (e.g., "her phone", "my laptop") with specific entity names from memory (e.g., "Samsung A06", "MacBook Pro").
+    If no relevant context is found, keep the query as is.
+    
+    Return ONLY the refined query string. No quotes, no explanations.
+    """
+    prompt = PromptTemplate(template=template, input_variables=["input", "context"])
+    chain = prompt | llm
+    response = chain.invoke({"input": state["user_input"], "context": memory_context})
+    refined_query = response.content.strip()
+    print(f"   - Refined Query: '{refined_query}'")
+
+    # 3. Search with Refined Query
     tavily_key = os.getenv("TAVILY_API_KEY")
     if not tavily_key:
         return {"web_context": "Error: TAVILY_API_KEY not found."}
         
     try:
         tavily = TavilyClient(api_key=tavily_key)
-        response = tavily.search(query=state["user_input"], search_depth="basic")
-        context = "\n".join([r["content"] for r in response["results"]])
-        return {"web_context": context}
+        response = tavily.search(query=refined_query, search_depth="basic")
+        
+        # Format results
+        web_results = "\n".join([f"- {r['content']}" for r in response["results"]])
+        
+        # Combine for Advisor
+        full_context = f"Refined Query: {refined_query}\n\nWeb Results:\n{web_results}"
+        
+        return {"web_context": full_context}
     except Exception as e:
         print(f"❌ Research failed: {e}")
         return {"web_context": "Could not fetch web results."}
@@ -85,14 +118,18 @@ def inserter_agent(state: AgentState):
     print("✍️ Inserter Agent: Saving memory...")
     text = state["user_input"]
     
-    # 1. Smart Linking: Find existing similar nodes
-    existing_nodes = database.find_similar_nodes(text)
+    # 1. GraphRAG: Get Context Subgraph
+    context_subgraph = database.get_context_subgraph(text)
     
     # 2. Extract Entities (Graph) with context
-    graph_data = processor.analyze_text(text, existing_nodes=existing_nodes)
+    graph_data = processor.analyze_text(text, context_subgraph=context_subgraph)
     database.save_to_graph(graph_data)
     
-    # 2. Save Vector
+    # 3. Save Node Embeddings for future GraphRAG
+    for node in graph_data.get("nodes", []):
+        database.save_node_embedding(node)
+    
+    # 4. Save Vector (Standard RAG)
     database.save_to_vector(text)
     
     return {"final_answer": f"Saved to memory! Extracted {len(graph_data.get('nodes', []))} entities."}
