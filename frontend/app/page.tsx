@@ -1,23 +1,37 @@
 "use client";
 
-import { useState } from "react";
-import ChatPanel from "../components/ChatPanel";
-import GraphCanvas from "../components/GraphCanvas";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import MindMap from "@/components/MindMap";
+import ChatInterface from "@/components/ChatInterface";
+import VaultPanel from "@/components/VaultPanel";
+// Mock simple Toast for now to avoid installing shadcn full setup heavily if not needed for demo
+// But for "High end", we should assume Toaster is present. I will add a simple placeholder toaster.
+
+const queryClient = new QueryClient();
 
 export default function Home() {
-  const [refreshKey, setRefreshKey] = useState(0);
-
   return (
-    <main className="grid grid-cols-12 h-[100dvh] w-screen overflow-hidden bg-slate-950 text-white">
-      {/* Left Column: Chat Interface */}
-      <div className="col-span-4 h-full border-r border-slate-800">
-        <ChatPanel onInsertSuccess={() => setRefreshKey((k) => k + 1)} />
-      </div>
+    <QueryClientProvider client={queryClient}>
+      <main className="flex h-screen bg-black text-slate-200 overflow-hidden">
+        {/* Mindmap Area (Center) */}
+        <section className="flex-1 p-4 relative">
+          <MindMap />
+          {/* Proactive Alert Overlay (Mock) */}
+          <div className="absolute top-4 right-4 pointer-events-none">
+            {/* Toasts would appear here */}
+          </div>
+        </section>
 
-      {/* Right Column: Knowledge Graph */}
-      <div className="col-span-8 h-full relative">
-        <GraphCanvas refreshKey={refreshKey} />
-      </div>
-    </main>
+        {/* Sidebar (Right) */}
+        <aside className="w-[400px] flex flex-col border-l border-slate-800">
+          <div className="h-1/2 border-b border-slate-800">
+            <ChatInterface />
+          </div>
+          <div className="h-1/2">
+            <VaultPanel />
+          </div>
+        </aside>
+      </main>
+    </QueryClientProvider>
   );
 }

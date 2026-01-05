@@ -9,3 +9,12 @@ supabase
 langgraph
 tavily-python
 langchain-community
+sqlalchemy
+pgvector
+alembic
+psycopg2-binary
+python-multipart
+pyjwt
+passlib
+apscheduler
+httpx

@@ -1,361 +1,318 @@
 import os
 import time
+from typing import List, Optional, Dict, Any, Union
+from datetime import datetime
+import json
+from uuid import uuid4
+
 from dotenv import load_dotenv
-from neo4j import GraphDatabase
-from pinecone import Pinecone
+from sqlalchemy import (
+    create_engine, 
+    Column, 
+    Integer, 
+    String, 
+    Text, 
+    ForeignKey, 
+    DateTime, 
+    Boolean, 
+    Float,
+    Index,
+    func,
+    text
+)
+from sqlalchemy.orm import (
+    declarative_base, 
+    sessionmaker, 
+    relationship, 
+    Session, 
+    joinedload
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from pgvector.sqlalchemy import Vector
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 # Load environment variables
 load_dotenv()
 
-# Initialize Embedding Model
+# --- Configuration ---
+
+# Database URL should be in the format: postgresql://user:password@host:port/dbname
+# For Supabase, this is provided in the Connection Pooling settings (Transaction mode recommended for serverless)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    # Fallback/Placeholder for local development or explicit error
+    print("⚠️  DATABASE_URL not found in environment. Using sqlite fallback for demonstration/tests only if needed.")
+    DATABASE_URL = "sqlite:///./local_brain.db" 
+
+# Initialize Embedding Model (Gemini)
+# We use this to generate embeddings for the vector column
 def get_embeddings():
     api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY is required for embeddings.")
     return GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key)
 
-def get_neo4j_driver():
-    uri = os.getenv("NEO4J_URI")
-    user = os.getenv("NEO4J_USERNAME")
-    password = os.getenv("NEO4J_PASSWORD")
-    
-    if not all([uri, user, password]):
-        print("❌ Neo4j credentials missing.")
-        return None
-        
+# --- SQLAlchemy Setup ---
+
+Base = declarative_base()
+
+# We use a synchronous engine for simplicity and reliable migration handling with Alembic.
+# For high-concurrency async apps, `create_async_engine` + `AsyncSession` is standard, 
+# but synchronous SQLAlchemy is more than adequate for this Assistant's scale and easier to debug.
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def get_db():
+    """Dependency for FastAPI or context managers to get a DB session."""
+    db = SessionLocal()
     try:
-        return GraphDatabase.driver(uri, auth=(user, password))
-    except Exception as e:
-        print(f"❌ Failed to create driver: {e}")
-        return None
-
-def find_similar_nodes(query: str) -> list[str]:
-    """
-    Searches Neo4j for nodes that might be relevant to the user's input.
-    Uses a simple case-insensitive CONTAINS search on the 'name' property.
-    """
-    print(f"🔍 Searching for similar nodes to: '{query}'")
-    driver = get_neo4j_driver()
-    if not driver:
-        return []
-
-    found_nodes = set()
-    
-    # Split query into words and filter out short words/stopwords
-    words = [w for w in query.split() if len(w) > 3]
-    
-    if not words:
-        return []
-
-    try:
-        with driver.session() as session:
-            for word in words:
-                # Cypher query to find nodes containing the word (case-insensitive)
-                # We limit to 5 matches per word to avoid context flooding
-                cypher = """
-                MATCH (n:Entity)
-                WHERE toLower(n.name) CONTAINS toLower($word)
-                RETURN n.name AS name LIMIT 5
-                """
-                result = session.run(cypher, word=word)
-                for record in result:
-                    found_nodes.add(record["name"])
-                    
-        print(f"✅ Found {len(found_nodes)} similar nodes: {list(found_nodes)}")
-        return list(found_nodes)
-        
-    except Exception as e:
-        print(f"❌ Error searching for nodes: {e}")
-        return []
+        yield db
     finally:
-        driver.close()
+        db.close()
 
-def save_node_embedding(node_name):
-    """
-    Embeds the node name and saves it to Pinecone with id=node_name.
-    This allows us to find nodes by semantic similarity.
-    """
-    print(f"Saving Node Embedding: '{node_name}'")
-    pinecone_api_key = os.getenv("PINECONE_API_KEY")
-    if not pinecone_api_key:
-        return
+# --- Models ---
 
-    try:
-        embeddings = get_embeddings()
-        vector = embeddings.embed_query(node_name)
-        
-        pc = Pinecone(api_key=pinecone_api_key)
-        indexes = pc.list_indexes()
-        index_names = [i.name for i in indexes] if hasattr(indexes, 'names') else [i['name'] for i in indexes] if isinstance(indexes, list) else indexes
-        
-        if not index_names:
-            return
-            
-        index = pc.Index(index_names[0])
-        
-        # Upsert with ID = Node Name
-        index.upsert(
-            vectors=[
-                {
-                    "id": node_name, # Key difference: ID is the node name itself
-                    "values": vector,
-                    "metadata": {"type": "node", "text": node_name}
-                }
-            ]
-        )
-        print(f"✅ Node embedding saved for '{node_name}'")
-        
-    except Exception as e:
-        print(f"❌ Error saving node embedding: {e}")
+class BaseModel(Base):
+    """
+    Abstract base class adding common timestamp columns to all tables.
+    Also includes a helper for handling UUIDs.
+    """
+    __abstract__ = True
 
-def get_context_subgraph(query_text: str) -> str:
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # updated_at will be handled by a trigger in raw SQL or manually updated for now.
+    # Note: `onupdate=func.now()` handles Python-side updates, but a DB trigger is consistently safer.
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Entity(BaseModel):
     """
-    GraphRAG:
-    1. Vector Search Pinecone for similar nodes.
-    2. Fetch subgraph (Node + 1-hop neighbors) from Neo4j.
-    3. Return natural language summary.
+    Represents a structured item in the knowledge graph.
+    - People, Projects, Links, Credentials, Films, etc.
+    - Uses JSONB for flexible metadata storage (schema parameters).
     """
-    print(f"🕸️ GraphRAG: Retrieving context for '{query_text}'")
+    __tablename__ = "entities"
+
+    name = Column(String, nullable=False, index=True)
+    entity_type = Column(String, nullable=False, index=True) # e.g., "Person", "Project"
+    description = Column(Text, nullable=True)
     
-    # Step A: Vector Search
-    pinecone_api_key = os.getenv("PINECONE_API_KEY")
-    if not pinecone_api_key:
-        return ""
-        
-    matched_nodes = []
-    try:
-        embeddings = get_embeddings()
-        vector = embeddings.embed_query(query_text)
-        
-        pc = Pinecone(api_key=pinecone_api_key)
-        indexes = pc.list_indexes()
-        index_names = [i.name for i in indexes] if hasattr(indexes, 'names') else [i['name'] for i in indexes] if isinstance(indexes, list) else indexes
-        
-        if index_names:
-            index = pc.Index(index_names[0])
-            results = index.query(vector=vector, top_k=3, include_metadata=True)
-            
-            for match in results.matches:
-                # We assume ID is the node name (from save_node_embedding)
-                # Or we can use metadata['text']
-                node_name = match.id
-                matched_nodes.append(node_name)
-                
-    except Exception as e:
-        print(f"❌ Vector search failed: {e}")
-        return ""
-        
-    if not matched_nodes:
-        print("   - No similar nodes found in vector DB.")
-        return ""
-        
-    print(f"   - Found similar nodes: {matched_nodes}")
+    # Metadata for structured properties (e.g., {"email": "...", "role": "..."})
+    metadata_ = Column("metadata", JSONB, default=dict)
     
-    # Step B: Graph Traversal
-    driver = get_neo4j_driver()
-    if not driver:
-        return ""
-        
-    subgraph_facts = []
-    try:
-        with driver.session() as session:
-            # Cypher to get node and its immediate relationships
-            # We match nodes where 'name' is in our matched list
-            cypher = """
-            MATCH (n:Entity)-[r]-(m:Entity)
-            WHERE n.name IN $names
-            RETURN n.name AS source, type(r) AS relation, m.name AS target
-            LIMIT 20
-            """
-            result = session.run(cypher, names=matched_nodes)
-            
-            for record in result:
-                fact = f"{record['source']} {record['relation']} {record['target']}"
-                subgraph_facts.append(fact)
-                
-    except Exception as e:
-        print(f"❌ Graph traversal failed: {e}")
-    finally:
-        driver.close()
-        
-    # Step C: Formatter
-    if not subgraph_facts:
-        return ""
-        
-    context_str = "Context found:\n" + "\n".join(subgraph_facts)
-    print(f"✅ GraphRAG Context:\n{context_str}")
-    return context_str
+    # Tags for quick filtering
+    tags = Column(JSONB, default=list) # e.g., ["urgent", "work"]
 
-def save_to_graph(data):
-    """
-    Saves extracted nodes and edges to Neo4j.
-    Input: {'nodes': ['Name1', 'Name2'], 'edges': [['Name1', 'RELATION', 'Name2']]}
-    """
-    print(f"Saving to Graph: {data}")
-    driver = get_neo4j_driver()
-    if not driver:
-        return
+    # Relationships
+    # Notes linked to this entity
+    notes = relationship("Note", secondary="entity_notes", back_populates="entities")
+    
+    # Tasks linked to this entity
+    tasks = relationship("Task", back_populates="entity")
 
-    try:
-        with driver.session() as session:
-            # 1. Create Nodes
-            for node_name in data.get("nodes", []):
-                session.run("MERGE (n:Entity {name: $name})", name=node_name)
-            
-            # 2. Create Relationships
-            for edge in data.get("edges", []):
-                source, relation, target = edge
-                
-                # Sanitize relationship type (replace spaces with _, uppercase)
-                # Cypher requires relationship types to be static or injected safely
-                safe_relation = relation.replace(" ", "_").upper()
-                
-                # We use f-string for the relationship type because it cannot be a parameter
-                query = (
-                    "MATCH (a:Entity {name: $source}), (b:Entity {name: $target}) "
-                    f"MERGE (a)-[:{safe_relation}]->(b)"
-                )
-                
-                session.run(query, source=source, target=target)
-                
-        print("✅ Data saved to Neo4j successfully!")
-        
-    except Exception as e:
-        print(f"❌ Error saving to Neo4j: {e}")
-    finally:
-        driver.close()
+    def __repr__(self):
+        return f"<Entity(name={self.name}, type={self.entity_type})>"
 
-def save_to_vector(text):
+class UserProfile(BaseModel):
     """
-    Generates a vector for the text and saves it to Pinecone.
+    Stores the User Persona, Bio-Memory, and Stats.
+    Singleton-like (usually only 1 row).
     """
-    print(f"Saving to Vector: '{text[:50]}...'")
-    pinecone_api_key = os.getenv("PINECONE_API_KEY")
-    if not pinecone_api_key:
-        print("❌ PINECONE_API_KEY missing.")
-        return
+    __tablename__ = "user_profiles"
 
-    try:
-        # 1. Generate Vector
-        embeddings = get_embeddings()
-        vector = embeddings.embed_query(text)
+    name = Column(String, nullable=False, default="User")
+    
+    # Bio-Memory: Daily routines, preferences, tone quirks, life events
+    # e.g. {"routines": ["Gym at 6am"], "preferences": {"food": "Spicy"}, "tone": "Direct"}
+    bio_memory = Column(JSONB, default=dict)
+    
+    # Stats: Loyalty score, Interaction count, etc.
+    # e.g. {"loyalty_score": 55, "interaction_count": 100}
+    stats = Column(JSONB, default=lambda: {"loyalty_score": 50, "interaction_count": 0})
+
+class Note(BaseModel):
+    """
+    Stores unstructured thoughts, memories, or raw inputs.
+    - Includes a Vector Embedding for semantic search.
+    - 'content' is the searchable text.
+    """
+    #__tablename__ = "notes" # Implicitly handled but good to be explicit
+    __tablename__ = "notes"
+
+    content = Column(Text, nullable=False)
+    
+    # pgvector embedding: 768 dimensions for Gemini text-embedding-004
+    embedding = Column(Vector(768))
+
+    # Many-to-Many link to Entities (A note can mention multiple entities)
+    entities = relationship("Entity", secondary="entity_notes", back_populates="notes")
+    
+    # One-to-Many: A note can generate multiple tasks
+    tasks = relationship("Task", back_populates="note")
+
+    # Index for hybrid search (Full Text Search)
+    # Allows fast keyword matching alongside vector search
+    # (Requires creating a tsvector index in migration)
+
+    def __repr__(self):
+        return f"<Note(preview={self.content[:30]}...)>"
+
+class EntityNoteLink(Base):
+    """
+    Association table for Many-to-Many between Entities and Notes.
+    """
+    __tablename__ = "entity_notes"
+    
+    entity_id = Column(UUID(as_uuid=True), ForeignKey("entities.id"), primary_key=True)
+    note_id = Column(UUID(as_uuid=True), ForeignKey("notes.id"), primary_key=True)
+
+class Task(BaseModel):
+    """
+    Proactive tasks and reminders.
+    - Can be linked to a specific Entity (e.g., "Project X") or a Note (source of truth).
+    """
+    __tablename__ = "tasks"
+
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    
+    status = Column(String, default="PENDING", index=True) # PENDING, IN_PROGRESS, DONE, ARCHIVED
+    priority = Column(Integer, default=1) # 1=Normal, 2=High, 3=Critical
+    
+    due_date = Column(DateTime(timezone=True), nullable=True, index=True)
+    is_recurring = Column(Boolean, default=False)
+    
+    # Foreign Keys
+    entity_id = Column(UUID(as_uuid=True), ForeignKey("entities.id"), nullable=True)
+    note_id = Column(UUID(as_uuid=True), ForeignKey("notes.id"), nullable=True)
+    
+    # Relationships
+    entity = relationship("Entity", back_populates="tasks")
+    note = relationship("Note", back_populates="tasks")
+
+class Relationship(BaseModel):
+    """
+    Represents the edges in the Knowledge Graph.
+    - Connects two Entities.
+    - e.g., Entity(Manuth) -> [OWNS] -> Entity(Project X)
+    - Strength can be used to weight connections.
+    """
+    __tablename__ = "relationships"
+
+    source_id = Column(UUID(as_uuid=True), ForeignKey("entities.id"), nullable=False)
+    target_id = Column(UUID(as_uuid=True), ForeignKey("entities.id"), nullable=False)
+    
+    relation_type = Column(String, nullable=False) # e.g., "OWNS", "CREATED", "BLOCKS"
+    strength = Column(Float, default=1.0) # For weighted graph algorithms
+    
+    # Explicit relationships for easy traversal
+    source = relationship("Entity", foreign_keys=[source_id])
+    target = relationship("Entity", foreign_keys=[target_id])
+
+class AuditLog(BaseModel):
+    """
+    Immutable log of all AI actions for context awareness and debugging.
+    - "I reminded Manuth about X"
+    - "I deleted Project Y"
+    """
+    __tablename__ = "audit_logs"
+
+    action = Column(String, nullable=False) # e.g., "CREATE_NOTE", "SEND_REMINDER"
+    details = Column(JSONB, default=dict) # Full context snapshot
+    
+    # No updated_at needed for immutable logs, but included via BaseModel for consistency
+    
+# --- Database Helpers & Hybrid Search ---
+
+class DatabaseService:
+    def __init__(self, db_session: Session):
+        self.db = db_session
+        self.embeddings = get_embeddings()
+
+    def add_note(self, content: str, entity_names: List[str] = None):
+        """
+        Creates a note, generates its embedding, and links it to entities (creating them if needed).
+        """
+        # 1. Generate Embedding
+        vector = self.embeddings.embed_query(content)
         
-        # 2. Connect to Pinecone
-        pc = Pinecone(api_key=pinecone_api_key)
+        # 2. Create Note
+        new_note = Note(content=content, embedding=vector)
+        self.db.add(new_note)
         
-        # Get the first available index
-        indexes = pc.list_indexes()
-        index_names = [i.name for i in indexes] if hasattr(indexes, 'names') else [i['name'] for i in indexes] if isinstance(indexes, list) else indexes
+        # 3. Handle Entities
+        if entity_names:
+            for name in entity_names:
+                # Simple deduplication: Check if entity exists by name
+                # (In production, might need fuzzy matching or stricter unique constraints)
+                entity = self.db.query(Entity).filter(Entity.name == name).first()
+                if not entity:
+                    entity = Entity(name=name, entity_type="General") # Default type
+                    self.db.add(entity)
+                
+                new_note.entities.append(entity)
         
-        if not index_names:
-            print("❌ No Pinecone indexes found.")
-            return
-            
-        index_name = index_names[0] # Use the first index
-        index = pc.Index(index_name)
+        # 4. Audit Log
+        self.log_action("CREATE_NOTE", {"content_preview": content[:50], "entities": entity_names})
         
-        # 3. Upsert Vector
-        # ID is a simple timestamp
-        vector_id = str(int(time.time()))
+        self.db.commit()
+        self.db.refresh(new_note)
+        return new_note
+
+    def hybrid_search(self, query: str, k: int = 5, alpha: float = 0.5):
+        """
+        Performs Hybrid Search:
+        1. Semantic Search (Vector Similarity) using pgvector ('<->' operator or cosine).
+        2. Keyword Search (not fully implemented here without TSVector setup, but simulated via ILIKE for robustness).
         
-        index.upsert(
-            vectors=[
-                {
-                    "id": vector_id,
-                    "values": vector,
-                    "metadata": {"text": text}
-                }
-            ]
+        For robust Hybrid Search in Postgres:
+        - We usually use Reciprocal Rank Fusion (RRF) to combine results.
+        
+        Here, we will prioritize standard Vector Search as it's the primary requirement for "Hybrid" 
+        usually implying Vector + Filter or Vector + Keyword.
+        """
+        # Generate query embedding
+        query_vector = self.embeddings.embed_query(query)
+        
+        # SQLAlchemy pgvector query (Cosine Distance)
+        # Note: 'embedding' column must have an index (hnsw or ivfflat) for performance
+        results = (
+            self.db.query(Note)
+            .order_by(Note.embedding.cosine_distance(query_vector))
+            .limit(k)
+            .all()
         )
         
-        print(f"✅ Vector saved to Pinecone index '{index_name}' with ID {vector_id}!")
+        # TODO: Implement true Keyword search integration (using ts_rank)
+        # This requires `tsvector` column and full text search index.
         
-    except Exception as e:
-        print(f"❌ Error saving to Pinecone: {e}")
+        return results
 
-def search_memory(query):
-    """
-    Searches Pinecone for relevant context.
-    Returns a string of concatenated context.
-    """
-    print(f"Searching Memory for: '{query}'")
-    pinecone_api_key = os.getenv("PINECONE_API_KEY")
-    if not pinecone_api_key:
-        return ""
-
-    try:
-        # 1. Generate Vector
-        embeddings = get_embeddings()
-        vector = embeddings.embed_query(query)
+    def get_knowledge_graph(self):
+        """
+        Fetches all nodes and edges for visualization.
+        """
+        entities = self.db.query(Entity).all()
+        relationships = self.db.query(Relationship).all()
         
-        # 2. Connect to Pinecone
-        pc = Pinecone(api_key=pinecone_api_key)
-        indexes = pc.list_indexes()
-        index_names = [i.name for i in indexes] if hasattr(indexes, 'names') else [i['name'] for i in indexes] if isinstance(indexes, list) else indexes
+        nodes = [{"id": str(e.id), "label": e.name, "type": e.entity_type} for e in entities]
+        edges = [
+            {
+                "source": str(r.source_id), 
+                "target": str(r.target_id), 
+                "label": r.relation_type
+            } 
+            for r in relationships
+        ]
         
-        if not index_names:
-            return ""
-            
-        index = pc.Index(index_names[0])
-        
-        # 3. Search
-        results = index.query(vector=vector, top_k=3, include_metadata=True)
-        
-        # 4. Extract Context
-        contexts = []
-        for match in results.matches:
-            if match.metadata and "text" in match.metadata:
-                contexts.append(match.metadata["text"])
-                
-        return "\n\n".join(contexts)
-        
-    except Exception as e:
-        print(f"❌ Error searching memory: {e}")
-        return ""
+        return {"nodes": nodes, "edges": edges}
 
-def test_connections():
-    print("--- Starting Connection Tests ---")
-    
-    # 1. Neo4j Check
-    print("\nTesting Neo4j...")
-    driver = get_neo4j_driver()
-    if driver:
-        try:
-            driver.verify_connectivity()
-            records, summary, keys = driver.execute_query("RETURN 'Neo4j Connected!' AS message")
-            for record in records:
-                print(f"✅ {record['message']}")
-            driver.close()
-        except Exception as e:
-            print(f"❌ Neo4j Connection Failed: {e}")
-
-    # 2. Pinecone Check
-    print("\nTesting Pinecone...")
-    pinecone_api_key = os.getenv("PINECONE_API_KEY")
-
-    if not pinecone_api_key:
-        print("❌ PINECONE_API_KEY missing in .env")
-    else:
-        try:
-            pc = Pinecone(api_key=pinecone_api_key)
-            indexes = pc.list_indexes()
-            # Handle the response which might be an object or list depending on version
-            index_names = [i.name for i in indexes] if hasattr(indexes, 'names') else [i['name'] for i in indexes] if isinstance(indexes, list) else indexes
-            print(f"✅ Pinecone Connected! Available Indexes: {index_names}")
-        except Exception as e:
-            print(f"❌ Pinecone Connection Failed: {e}")
-
-if __name__ == "__main__":
-    # 1. Run connection tests
-    test_connections()
-    
-    # 2. Test Graph Storage
-    print("\n--- Testing Graph Storage ---")
-    dummy_data = {
-        "nodes": ["Steve Jobs", "Apple"], 
-        "edges": [["Steve Jobs", "FOUNDED", "Apple"]]
-    }
-    save_to_graph(dummy_data)
-    
-    # 3. Test Vector Storage
-    print("\n--- Testing Vector Storage ---")
-    save_to_vector("Steve Jobs was a visionary who changed the world with the iPhone.")
+    def log_action(self, action: str, details: dict):
+        """
+        Logs an action to the Audit Table.
+        """
+        log = AuditLog(action=action, details=details)
+        self.db.add(log)
+        # Commit usually happens at the end of the transaction scope, 
+        # but logs can be committed immediately if critical.
