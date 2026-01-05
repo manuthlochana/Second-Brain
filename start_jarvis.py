@@ -29,9 +29,11 @@ def run_migrations():
         # Assumes generic Alembic setup
         subprocess.run(["alembic", "upgrade", "head"], cwd="./backend", check=True)
         log("Migrations Applied.", "SUCCESS")
+    except subprocess.CalledProcessError as e:
+        log(f"Migration Failed (Non-Fatal): {e}", "ERROR")
+        log("⚠️ System will attempt to start, but database features may be unstable.", "INFO")
     except Exception as e:
-        log(f"Migration Failed: {e}", "ERROR")
-        # Don't exit, might be just 'no changes'
+        log(f"Migration Error: {e}", "ERROR")
 
 def start_processes():
     processes = []

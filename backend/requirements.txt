@@ -18,3 +18,4 @@ pyjwt
 passlib
 apscheduler
 httpx
+python-telegram-bot
