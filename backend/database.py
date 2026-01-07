@@ -30,6 +30,8 @@ from sqlalchemy.orm import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from pgvector.sqlalchemy import Vector
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from sqlalchemy.exc import OperationalError
 
 # Load environment variables
 load_dotenv()
@@ -63,8 +65,39 @@ Base = declarative_base()
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# --- Connection Logic ---
+
+def check_connection():
+    """Simple heartbeat to check if DB is reachable."""
+    try:
+        # Create a fresh temp connection
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception as e:
+        print(f"❌ DB Heartbeat Failed: {e}")
+        return False
+
+# Retry 3 times, wait 1s, 2s, 4s...
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type(OperationalError))
+def get_db_safe():
+    """
+    Robust dependency that ensures DB is actually reachable.
+    Raises exception after retries, allowing fallback logic upstream.
+    """
+    db = SessionLocal()
+    try:
+        # Trigger a simple check
+        db.execute(text("SELECT 1"))
+        yield db
+    except OperationalError as e:
+        print(f"⚠️ DB Connection Failed (Retrying...): {e}")
+        raise e # Let Tenacity handle retry
+    finally:
+        db.close()
+
 def get_db():
-    """Dependency for FastAPI or context managers to get a DB session."""
+    """Standard dependency (kept for backward compatibility)."""
     db = SessionLocal()
     try:
         yield db

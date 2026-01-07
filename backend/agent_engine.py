@@ -374,5 +374,111 @@ def run_agent(user_input: str):
         "final_answer": ""
     }
     
+    
     result = agent_app.invoke(initial_state)
     return result["final_answer"]
+
+async def astream_agent(user_input: str):
+    """
+    Async Generator for Streaming Responses.
+    Yields:
+    - "THINKING: <status>"
+    - "TOKEN: <text>"
+    """
+    print(f"\n🌊 Streaming Agent Started: '{user_input}'")
+    
+    # Run the "Thinking" phases (Pre-computation)
+    # We can use the graph, but we want to intercept the FINAL node.
+    # Current LangGraph setup calculates final_answer in "response_generator"
+    
+    # 1. State Setup
+    initial_state = {
+        "user_input": user_input,
+        "user_id": "",
+        "user_profile": {},
+        "memory_context": "",
+        "intent": "",
+        "processed_data": {},
+        "plan": [],
+        "critique": "None",
+        "final_answer": ""
+    }
+    
+    # 2. Run Intermediary Steps (Thinking)
+    # We invoke the graph but we modify "response_generator" to NOT call invoke() 
+    # but return the prompt inputs.
+    # HOWEVER, modifying the compiled graph on the fly is hard.
+    # ALTERNATIVE: We use the existing graph to get the state *before* generation?
+    # Or simpler: We just run the graph to completion (since it's fast usually except LLM) 
+    # BUT we want to stream the LLM part.
+    
+    # Let's manually run the nodes for the "Thinking" phase to get the PROMPT CONTEXT.
+    # This duplicates logic slightly but ensures streaming works perfectly without refactoring the whole graph to async.
+    
+    yield "THINKING: Identifying Intent..."
+    p_res = profile_loader(initial_state) 
+    initial_state.update(p_res)
+    
+    s_res = semantic_router(initial_state)
+    initial_state.update(s_res)
+    
+    yield f"THINKING: Accessing Memory... ({s_res['intent']})"
+    m_res = memory_retriever(initial_state) # This uses DB, might block slightly
+    initial_state.update(m_res)
+    
+    r_res = reasoning_core(initial_state)
+    initial_state.update(r_res)
+    
+    pl_res = planner_node(initial_state)
+    initial_state.update(pl_res)
+    
+    e_res = executor_node(initial_state)
+    initial_state.update(e_res)
+    
+    # 3. Stream Generation
+    # If executor provided a final answer (e.g. note stored), yield it directly.
+    if initial_state.get("final_answer"):
+        yield f"TOKEN: {initial_state['final_answer']}"
+        return
+
+    yield "THINKING: Synthesizing Response..."
+    
+    # Prepare Prompt (Same logic as response_generator)
+    llm = get_llm()
+    import persona_config
+    from datetime import datetime
+    
+    # Profile might be inside user_profile dict now
+    prof = initial_state["user_profile"] # dict
+    
+    # Safe access to stats
+    loyalty = 50
+    if "stats" in prof:
+        loyalty = prof["stats"].get("loyalty_score", 50)
+        
+    formatted_prompt = persona_config.JARVIS_SYSTEM_PROMPT.format(
+        user_name=prof.get("name", "User"),
+        current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        reflections=" streaming mode ...", 
+        loyalty_score=loyalty
+    )
+    
+    template = formatted_prompt + """
+    
+    Context/Memories: {context}
+    User Request: {input}
+    
+    Draft a concise, professional response.
+    """
+    prompt = PromptTemplate(template=template, input_variables=["context", "input"])
+    
+    chain = prompt | llm
+    
+    # Stream the tokens
+    async for chunk in chain.astream({
+        "context": initial_state["memory_context"],
+        "input": initial_state["user_input"]
+    }):
+        if chunk.content:
+            yield f"TOKEN: {chunk.content}"
+

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -259,6 +259,35 @@ async def proactive_trigger(background_tasks: BackgroundTasks, request: Request)
     background_tasks.add_task(process_brain_task, "System: Check for urgent tasks and proactive notifications.", correlation_id)
     
     return {"status": "triggered", "correlation_id": correlation_id}
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: WebIngestRequest, api_key: str = Depends(verify_api_key)):
+    """
+    Streaming Endpoint for Real-time Chat.
+    Yields chunks: "THINKING: ..." or "TOKEN: ..."
+    """
+    async def event_generator():
+        try:
+            # We use the new async streaming agent
+            async for chunk in agent_engine.astream_agent(request.user_input):
+                # Format as Server-Sent Event or just raw chunks
+                # For simplicity, we just yield the text chunk + newline
+                yield f"{chunk}\n"
+        except Exception as e:
+            logger.error(f"Stream Error: {e}")
+            yield f"TOKEN: [System Error: {str(e)}]\n"
+
+    return StreamingResponse(event_generator(), media_type="text/plain")
+
+@app.get("/health")
+async def health_check():
+    """
+    Heartbeat for Database and System.
+    """
+    import database
+    db_status = "DB_CONNECTED" if database.check_connection() else "DB_OFFLINE"
+    return {"status": "online", "database": db_status, "system": "CEO Brain"}
 
 @app.websocket("/ws/status")
 async def websocket_endpoint(websocket: WebSocket):
