@@ -28,8 +28,6 @@ from sqlalchemy.orm import (
     joinedload
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from pgvector.sqlalchemy import Vector
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from sqlalchemy.exc import OperationalError
 
@@ -37,23 +35,10 @@ from sqlalchemy.exc import OperationalError
 load_dotenv()
 
 # --- Configuration ---
-
-# Database URL should be in the format: postgresql://user:password@host:port/dbname
-# For Supabase, this is provided in the Connection Pooling settings (Transaction mode recommended for serverless)
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    # Fallback/Placeholder for local development or explicit error
-    print("⚠️  DATABASE_URL not found in environment. Using sqlite fallback for demonstration/tests only if needed.")
     DATABASE_URL = "sqlite:///./local_brain.db" 
-
-# Initialize Embedding Model (Gemini)
-# We use this to generate embeddings for the vector column
-def get_embeddings():
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise ValueError("GOOGLE_API_KEY is required for embeddings.")
-    return GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key)
 
 # --- SQLAlchemy Setup ---
 
@@ -174,26 +159,21 @@ class UserProfile(BaseModel):
 class Note(BaseModel):
     """
     Stores unstructured thoughts, memories, or raw inputs.
-    - Includes a Vector Embedding for semantic search.
+    - Vector embeddings are stored in Pinecone (not in database)
     - 'content' is the searchable text.
     """
-    #__tablename__ = "notes" # Implicitly handled but good to be explicit
     __tablename__ = "notes"
 
     content = Column(Text, nullable=False)
     
-    # pgvector embedding: 768 dimensions for Gemini text-embedding-004
-    embedding = Column(Vector(768))
+    # NOTE: Vector embeddings moved to Pinecone!
+    # embedding = Column(Vector(768))  # REMOVED - now in Pinecone
 
     # Many-to-Many link to Entities (A note can mention multiple entities)
     entities = relationship("Entity", secondary="entity_notes", back_populates="notes")
     
     # One-to-Many: A note can generate multiple tasks
     tasks = relationship("Task", back_populates="note")
-
-    # Index for hybrid search (Full Text Search)
-    # Allows fast keyword matching alongside vector search
-    # (Requires creating a tsvector index in migration)
 
     def __repr__(self):
         return f"<Note(preview={self.content[:30]}...)>"
@@ -268,24 +248,21 @@ class AuditLog(BaseModel):
 class DatabaseService:
     def __init__(self, db_session: Session):
         self.db = db_session
-        self.embeddings = get_embeddings()
+        # No longer need embeddings - handled by Pinecone!
 
     def add_note(self, content: str, entity_names: List[str] = None):
         """
-        Creates a note, generates its embedding, and links it to entities (creating them if needed).
+        Creates a note and links it to entities.
+        NOTE: Embeddings are handled separately by Pinecone (see memory_manager.py)
         """
-        # 1. Generate Embedding
-        vector = self.embeddings.embed_query(content)
-        
-        # 2. Create Note
-        new_note = Note(content=content, embedding=vector)
+        # 1. Create Note (NO embedding - that's in Pinecone)
+        new_note = Note(content=content)
         self.db.add(new_note)
         
-        # 3. Handle Entities
+        # 2. Handle Entities
         if entity_names:
             for name in entity_names:
                 # Simple deduplication: Check if entity exists by name
-                # (In production, might need fuzzy matching or stricter unique constraints)
                 entity = self.db.query(Entity).filter(Entity.name == name).first()
                 if not entity:
                     entity = Entity(name=name, entity_type="General") # Default type
@@ -293,41 +270,12 @@ class DatabaseService:
                 
                 new_note.entities.append(entity)
         
-        # 4. Audit Log
+        # 3. Audit Log
         self.log_action("CREATE_NOTE", {"content_preview": content[:50], "entities": entity_names})
         
         self.db.commit()
         self.db.refresh(new_note)
         return new_note
-
-    def hybrid_search(self, query: str, k: int = 5, alpha: float = 0.5):
-        """
-        Performs Hybrid Search:
-        1. Semantic Search (Vector Similarity) using pgvector ('<->' operator or cosine).
-        2. Keyword Search (not fully implemented here without TSVector setup, but simulated via ILIKE for robustness).
-        
-        For robust Hybrid Search in Postgres:
-        - We usually use Reciprocal Rank Fusion (RRF) to combine results.
-        
-        Here, we will prioritize standard Vector Search as it's the primary requirement for "Hybrid" 
-        usually implying Vector + Filter or Vector + Keyword.
-        """
-        # Generate query embedding
-        query_vector = self.embeddings.embed_query(query)
-        
-        # SQLAlchemy pgvector query (Cosine Distance)
-        # Note: 'embedding' column must have an index (hnsw or ivfflat) for performance
-        results = (
-            self.db.query(Note)
-            .order_by(Note.embedding.cosine_distance(query_vector))
-            .limit(k)
-            .all()
-        )
-        
-        # TODO: Implement true Keyword search integration (using ts_rank)
-        # This requires `tsvector` column and full text search index.
-        
-        return results
 
     def get_knowledge_graph(self):
         """

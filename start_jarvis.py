@@ -16,7 +16,7 @@ def log(msg, type="INFO"):
 
 def check_env():
     log("Checking Environment...", "INFO")
-    required = ["DATABASE_URL", "GOOGLE_API_KEY", "TELEGRAM_BOT_TOKEN"]
+    required = ["DATABASE_URL", "GOOGLE_API_KEY", "PINECONE_API_KEY", "TELEGRAM_BOT_TOKEN"]
     missing = [key for key in required if not os.getenv(key)]
     
     if missing:

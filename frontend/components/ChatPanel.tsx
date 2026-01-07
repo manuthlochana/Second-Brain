@@ -52,6 +52,8 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
     const handleSendMessage = async (text: string) => {
         const userMsg = text;
         setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
+
+        // INSTANT TYPING INDICATOR - No delay!
         setLoading(true);
 
         try {
@@ -78,9 +80,11 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
                             return newMessages;
                         });
                     } else if (chunk.startsWith("TOKEN:")) {
+                        // First token arrives - hide typing indicator
                         if (isThinking) {
                             isThinking = false;
                             fullResponse = "";
+                            setLoading(false);  // HIDE "Thinking..." bubble
                         }
                         // Add token to response
                         const token = chunk.substring(7);

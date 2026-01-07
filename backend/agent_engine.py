@@ -8,12 +8,12 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
-from langgraph.graph import StateGraph, END
 from sqlalchemy import select, and_
 
 import database
 import processor
 import memory_manager
+import persona_config
 from contextlib import contextmanager
 
 # Load environment variables
@@ -28,7 +28,7 @@ def get_llm():
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError("GOOGLE_API_KEY not found")
-    return ChatGoogleGenerativeAI(model="gemini-flash-latest", temperature=0, google_api_key=api_key)
+    return ChatGoogleGenerativeAI(model="gemini-flash-latest", temperature=0.7, google_api_key=api_key)
 
 @contextmanager
 def get_db_session():
@@ -45,35 +45,9 @@ def get_db_session():
         except Exception:
             pass
 
-# --- Agent State ---
-
-class AgentState(TypedDict):
-    # Core Inputs
-    user_input: str
-    user_id: str # UUID of the active user profile
-    
-    # Context
-    user_profile: Dict[str, Any] # Loaded profile data
-    memory_context: str # Retrieved vector memories
-    web_context: str # Web search results
-    
-    # Reasoning
-    intent: str
-    processed_data: Dict[str, Any] # From Semantic Router
-    plan: List[str] # For multi-step reasoning
-    critique: str # From Critical Friend logic
-    
-    # Output
-    final_answer: str
-
-# --- Nodes ---
-
-def profile_loader(state: AgentState):
-    """Loads user profile and bio-memory."""
-    logger.debug("Profile Loader: Fetching user persona...")
-    
+def get_user_profile(user_id: Optional[str] = None) -> Dict[str, Any]:
+    """Loads user profile from database."""
     with get_db_session() as session:
-        # Singleton pattern for now: Get first profile or create default
         result = session.execute(select(database.UserProfile).limit(1))
         profile = result.scalar_one_or_none()
         
@@ -81,409 +55,404 @@ def profile_loader(state: AgentState):
             logger.info("Creating new profile for 'Manuth'")
             profile = database.UserProfile(
                 name="Manuth",
-                bio_memory={"routines": [], "preferences": {}, "tone": "Professional"},
+                bio_memory={"routines": [], "preferences": {}, "tone": "Casual"},
                 stats={"loyalty_score": 50, "interaction_count": 0}
             )
             session.add(profile)
             session.commit()
             session.refresh(profile)
-            
-        # Update interaction stats logic could go here or in Reflector
         
-        user_data = {
+        return {
             "id": str(profile.id),
             "name": profile.name,
             "bio_memory": profile.bio_memory,
             "stats": profile.stats
         }
-        
-    return {"user_profile": user_data, "user_id": str(profile.id)}
 
-def semantic_router(state: AgentState):
-    """Uses the existing Semantic Router to classify intent."""
-    logger.debug("Semantic Router: Analyzing input...")
-    p = processor.InputProcessor()
-    result = p.process(state["user_input"])
-    logger.info(f"Intent detected: {result.get('intent', 'UNKNOWN')}")
-    return {"intent": result.get("intent", "UNKNOWN"), "processed_data": result}
-
-def memory_retriever(state: AgentState):
-    """Fetches relevant memories + Proactive Task Check."""
-    logger.debug("Memory Retriever: Gathering context...")
-    
-    user_input = state["user_input"]
-    user_profile = state["user_profile"]
-    
-    context_parts = []
-    
+def update_interaction_stats(user_id: str):
+    """Updates user interaction statistics."""
     with get_db_session() as session:
-        # 1. Deep Memory Retrieval
-        # Use the highly specialized Memory Manager
-        retrieved_memories = memory_manager.memory_manager.retrieve_context(user_input, state["user_id"])
-        if retrieved_memories:
-            context_parts.append(retrieved_memories)
-            
-        # 2. Proactive Task Check (Urgent tasks)
-        # Check tasks due in the next 24 hours
-        now = datetime.now()
-        tomorrow = now + timedelta(days=1)
+        profile = session.execute(
+            select(database.UserProfile).where(database.UserProfile.id == user_id)
+        ).scalar_one_or_none()
         
-        # We need a proper query for due_date range
-        # Assuming due_date is offset-aware or we manage naive correctly. 
-        # database.py uses DateTime(timezone=True)
-        
-        urgent_tasks = session.execute(
-            select(database.Task).where(
-                and_(
-                    database.Task.status != 'DONE',
-                    database.Task.due_date <= tomorrow
-                )
-            ).order_by(database.Task.due_date)
-        ).scalars().all()
-        
-        if urgent_tasks:
-            task_list = [f"- {t.title} (Due: {t.due_date})" for t in urgent_tasks]
-            context_parts.append("\n⚠️ Urgent Tasks:\n" + "\n".join(task_list))
-            
-    full_context = "\n\n".join(context_parts)
-    return {"memory_context": full_context}
-
-def reasoning_core(state: AgentState):
-    """
-    The 'Critical Friend'. Analyzes logic, safety, and coherence.
-    Decides if the user's request is logical based on context.
-    """
-    logger.debug("Reasoning Core: Validating logic...")
-    
-    llm = get_llm()
-    profile = state["user_profile"]
-    context = state["memory_context"]
-    input_text = state["user_input"]
-    intent = state["intent"]
-    
-    # If trivial intent, skip heavy reasoning
-    if intent in ["SEARCH_MEMORY", "UNKNOWN"]:
-         return {"critique": "None"}
-
-    template = """
-    You are the 'Reasoning Core' of an advanced AI Assistant for {user_name}.
-    Your Loyalty Score is {loyalty}.
-    
-    TASK: Analyze the User Request against the Context and Profile.
-    
-    User Profile: {bio_memory}
-    Context/Memories: {context}
-    User Request: {input}
-    
-    CHECKLIST:
-    1. Is this request physically/financially possible given the context? (e.g., spending $5k with $2k balance).
-    2. Is it safe and logical?
-    3. Is it consistent with the user's long-term goals?
-    
-    OUTPUT:
-    If Valid: Return "VALID".
-    If Invalid/Illogical: Return a polite but firm counter-argument (The "Critical Friend" mode). Start with "CRITIQUE:".
-    """
-    
-    prompt = PromptTemplate(template=template, input_variables=["user_name", "loyalty", "bio_memory", "context", "input"])
-    
-    chain = prompt | llm
-    response = chain.invoke({
-        "user_name": profile["name"], 
-        "loyalty": profile["stats"].get("loyalty_score"),
-        "bio_memory": json.dumps(profile["bio_memory"]),
-        "context": context,
-        "input": input_text
-    })
-    
-    full_resp = response.content.strip()
-    if full_resp.startswith("CRITIQUE:"):
-        logger.warning(f"Critique generated: {full_resp[:100]}")
-        return {"critique": full_resp}
-    else:
-        logger.debug("Logic verified")
-        return {"critique": "None"}
-
-def planner_node(state: AgentState):
-    """
-    Generates a plan if the request is complex or if a critique exists.
-    """
-    if state["critique"] != "None":
-        # If there's a critique, the plan is to explain the critique and suggest alternatives.
-        return {"plan": ["Explain critique", "Suggest alternative"], "final_answer": state["critique"]}
-
-    # For now, simple pass-through unless it's a CREATE_TASK which we might plan out
-    # If the user says "Plan a date", the Semantic Router might tag it as CREATE_TASK or UNKNOWN
-    # We can detect complexity here.
-    
-    return {"plan": [], "final_answer": ""}
-
-def executor_node(state: AgentState):
-    """Executes the action (DB insert, Search, etc.)"""
-    # If we have a critique, we skip execution of the original intent usually,
-    # or effectively the execution is returning the critique.
-    if state["critique"] != "None":
-        return {} # Pass to reflector/end
-        
-    intent = state["intent"]
-    processed = state["processed_data"]
-    
-    logger.info(f"Executor: Running {intent}...")
-    
-    # Reusing brain.py logic style but implemented cleanly here
-    with get_db_session() as session:
-        service = database.DatabaseService(session)
-        
-        if intent == "STORE_NOTE":
-            service.add_note(state["user_input"], [e['name'] for e in processed.get("entities", [])])
-            return {"final_answer": "Note saved successfully."}
-            
-        elif intent == "CREATE_TASK":
-            # Just create the task
-            # TODO: Extract date from processed_data dates_times
-            date_str = processed.get("dates_times", [None])[0]
-            due_date = None
-            # Basic parsing placeholders - in prod use dateparser
-            if date_str:
-                # Naive attempt or leave None
-                pass
-                
-            task = database.Task(
-                title=state["user_input"],
-                status="PENDING",
-                due_date=due_date,
-                priority=processed.get("priority", 1)
-            )
-            session.add(task)
+        if profile:
+            stats = dict(profile.stats)
+            stats["interaction_count"] = stats.get("interaction_count", 0) + 1
+            stats["last_interaction"] = datetime.now().isoformat()
+            stats["loyalty_score"] = min(100, stats.get("loyalty_score", 50) + 0.2)
+            profile.stats = stats
             session.commit()
-            return {"final_answer": f"Task '{state['user_input']}' created."}
 
-        # SEARCH_MEMORY handled by context + advisor equivalent
-    
-    return {} # Fallback
+# --- Tavily Search Integration ---
 
-def response_generator(state: AgentState):
-    """Generates the final natural language response."""
-    # If we already have a final answer (from Critique or Executor), usage it.
-    if state.get("final_answer"):
-        return {} 
+def search_external(query: str) -> str:
+    """Performs external web search using Tavily API."""
+    try:
+        from tavily import TavilyClient
         
-    logger.debug("Response Generator: Synthesizing...")
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            logger.warning("TAVILY_API_KEY not found, skipping external search")
+            return "External search unavailable (API key missing)"
+        
+        client = TavilyClient(api_key=api_key)
+        results = client.search(query, max_results=3)
+        
+        # Format results
+        formatted = []
+        for idx, result in enumerate(results.get('results', []), 1):
+            formatted.append(
+                f"{idx}. **{result.get('title', 'No title')}**\n"
+                f"   {result.get('content', 'No content')}\n"
+                f"   Source: {result.get('url', 'No URL')}"
+            )
+        
+        return "\n\n".join(formatted) if formatted else "No results found"
+        
+    except ImportError:
+        logger.error("tavily-python not installed. Install via: pip install tavily-python")
+        return "External search unavailable (library not installed)"
+    except Exception as e:
+        logger.error(f"External search failed: {e}")
+        return f"External search failed: {str(e)}"
+
+# --- Intent Handlers ---
+
+def handle_reflex(processed_data: Dict[str, Any]) -> str:
+    """
+    FAST PATH: Instant social responses.
+    No database lookup, no heavy processing.
+    """
+    logger.info("⚡ REFLEX mode: Instant response")
+    
+    instant_reply = processed_data.get('instant_reply')
+    if instant_reply:
+        return instant_reply
+    
+    # Fallback canned responses
+    return "Got it! 👍"
+
+def handle_memory_write(user_input: str, processed_data: Dict[str, Any], user_id: str) -> str:
+    """
+    MEMORY WRITE: Extract facts and save to Pinecone + Supabase.
+    Returns confirmation message with specific details.
+    """
+    logger.info("💾 MEMORY_WRITE mode: Storing facts")
+    
+    extracted_facts = processed_data.get('extracted_facts', [])
+    
+    if not extracted_facts:
+        # Fallback: store the raw input
+        try:
+            result = memory_manager.memory_manager.save_memory(
+                text=user_input,
+                user_id=user_id,
+                entities=[]
+            )
+            return "Noted! I've saved that."
+        except Exception as e:
+            logger.error(f"Failed to save memory: {e}")
+            return f"I tried to save that but ran into an issue: {str(e)}"
+    
+    # Store each fact using memory_manager (Pinecone + Supabase)
+    stored_facts = []
+    try:
+        for fact in extracted_facts:
+            full_fact = fact.get('full_fact', user_input)
+            subject = fact.get('subject', '')
+            
+            # Extract entities
+            entities = [subject] if subject else []
+            
+            # Save to both Pinecone and Supabase
+            result = memory_manager.memory_manager.save_memory(
+                text=full_fact,
+                user_id=user_id,
+                entities=entities
+            )
+            
+            stored_facts.append(full_fact)
+            logger.debug(f"Saved: {result}")
+        
+        # Generate smart confirmation
+        if len(stored_facts) == 1:
+            fact = stored_facts[0]
+            return f"Noted, I'll remember: {fact}"
+        else:
+            facts_list = "\n- ".join(stored_facts)
+            return f"Got it! I've saved {len(stored_facts)} things:\n- {facts_list}"
+            
+    except Exception as e:
+        logger.error(f"Failed to save memories: {e}")
+        return f"I tried to save that but ran into an issue: {str(e)}"
+
+def handle_memory_read(user_input: str, processed_data: Dict[str, Any], user_id: str) -> str:
+    """
+    MEMORY READ: Search Pinecone and generate contextual response.
+    This is where the AI proves it's NOT a dumb chatbot.
+    """
+    logger.info("🔍 MEMORY_READ mode: Recalling context")
+    
+    search_query = processed_data.get('search_query', user_input)
+    
+    # Retrieve context from Pinecone
+    user_profile = get_user_profile(user_id)
+    memory_context = memory_manager.memory_manager.search_memory(search_query, user_id)
+    
+    if not memory_context or memory_context.strip() == "":
+        # Check if we have ANY memories
+        try:
+            from vector_store import get_vector_store
+            vs = get_vector_store()
+            stats = vs.get_stats()
+            total_vectors = stats.get('total_vectors', 0)
+            
+            if total_vectors == 0:
+                return "I don't have any memories stored yet. Share something with me first!"
+            else:
+                return f"Hmm, I searched my memory but couldn't find anything about '{search_query}'. Can you give me more context?"
+        except Exception as e:
+            logger.error(f"Failed to check vector stats: {e}")
+            return "I tried to search my memory but ran into an issue. Can you try rephrasing your question?"
+    
+    # Inject context into LLM prompt
     llm = get_llm()
     
-    import persona_config
-    from datetime import datetime
-    
-    # Fetch recent reflections (mock/db)
-    reflections = "No major reflections yet."
-    if profile.get("bio_memory", {}).get("reflections"):
-        reflections = str(profile["bio_memory"]["reflections"][-3:])
-
-    formatted_prompt = persona_config.JARVIS_SYSTEM_PROMPT.format(
-        user_name=profile["name"],
+    enhanced_prompt = persona_config.JARVIS_SYSTEM_PROMPT.format(
+        user_name=user_profile["name"],
         current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        reflections=reflections,
-        loyalty_score=profile["stats"].get("loyalty_score", 50)
+        reflections="Context from memory",
+        loyalty_score=user_profile["stats"].get("loyalty_score", 50)
     )
+    
+    template = enhanced_prompt + """
 
-    template = formatted_prompt + """
+**CRITICAL CONTEXT FROM MY MEMORY:**
+{context}
+
+**User Question:** {question}
+
+Rules:
+- Use the context above to answer
+- Reference specific details from memory naturally
+- If the context doesn't contain the answer, say so honestly
+- Be conversational and empathetic
+- NEVER ignore the provided context
+"""
     
-    Context/Memories: {context}
-    User Request: {input}
-    
-    Draft a concise, professional response.
-    """
-    prompt = PromptTemplate(template=template, input_variables=["context", "input"])
+    prompt = PromptTemplate(template=template, input_variables=["context", "question"])
     chain = prompt | llm
-    res = chain.invoke({
-        "context": state["memory_context"],
-        "input": state["user_input"]
+    
+    response = chain.invoke({
+        "context": memory_context,
+        "question": user_input
     })
     
-    return {"final_answer": res.content}
+    return response.content
 
-def reflector_node(state: AgentState):
+def handle_external(user_input: str, processed_data: Dict[str, Any]) -> str:
     """
-    Post-interaction reflection.
-    Updates User Profile (Bio-Memory) and Loyalty Score.
+    EXTERNAL: Web search for general knowledge.
+    Uses Tavily to search and LLM to synthesize.
     """
-    logger.debug("Reflector: Updating Persona...")
+    logger.info("🌐 EXTERNAL mode: Web search")
     
-    with get_db_session() as session:
-        # Load profile object
-        profile = session.execute(select(database.UserProfile).where(database.UserProfile.id == state["user_id"])).scalar_one()
-        
-        # 1. Update Loyalty/Stats
-        stats = dict(profile.stats)
-        stats["interaction_count"] = stats.get("interaction_count", 0) + 1
-        # Simple Logic: Interaction increases loyalty slightly
-        stats["loyalty_score"] = min(100, stats.get("loyalty_score", 50) + 0.1)
-        profile.stats = stats
-        
-        # 2. Extract Bio-Memory Update (LLM)
-        # We check if we learned anything new about the user
-        llm = get_llm()
-        template = """
-        Analyze this interaction for new facts about the user '{user_name}'.
-        Interaction: {input}
-        Response: {response}
-        Current Bio: {bio}
-        
-        Return a JSON object with keys "new_routines" (list), "new_preferences" (dict), "life_events" (list).
-        If nothing new, return empty lists/dicts.
-        """
-        # (Skipping full implementation for brevity, assuming simple update)
-        
-        session.commit()
-        
-    return {}
-
-# --- Graph ---
-
-workflow = StateGraph(AgentState)
-
-workflow.add_node("profile_loader", profile_loader)
-workflow.add_node("semantic_router", semantic_router)
-workflow.add_node("memory_retriever", memory_retriever)
-workflow.add_node("reasoning_core", reasoning_core)
-workflow.add_node("planner", planner_node)
-workflow.add_node("executor", executor_node)
-workflow.add_node("response_generator", response_generator)
-workflow.add_node("reflector", reflector_node)
-
-workflow.set_entry_point("profile_loader")
-
-workflow.add_edge("profile_loader", "semantic_router")
-workflow.add_edge("semantic_router", "memory_retriever")
-workflow.add_edge("memory_retriever", "reasoning_core")
-workflow.add_edge("reasoning_core", "planner") # Planner checks critique
-workflow.add_edge("planner", "executor")
-workflow.add_edge("executor", "response_generator")
-workflow.add_edge("response_generator", "reflector")
-workflow.add_edge("reflector", END)
-
-agent_app = workflow.compile()
-
-def run_agent(user_input: str):
-    logger.info(f"Agent Engine Started: '{user_input[:50]}...'")
-    initial_state = {
-        "user_input": user_input,
-        "user_id": "",
-        "user_profile": {},
-        "memory_context": "",
-        "web_context": "",
-        "intent": "",
-        "processed_data": {},
-        "plan": [],
-        "critique": "None",
-        "final_answer": ""
-    }
+    external_query = processed_data.get('external_query', user_input)
     
+    # Perform search
+    search_results = search_external(external_query)
     
-    result = agent_app.invoke(initial_state)
-    return result["final_answer"]
+    if "unavailable" in search_results.lower() or "failed" in search_results.lower():
+        return f"I tried to search for that but ran into issues: {search_results}"
+    
+    # Synthesize with LLM
+    llm = get_llm()
+    
+    template = """
+You are a helpful AI assistant answering a general knowledge question.
 
-async def astream_agent(user_input: str):
+**User Question:** {question}
+
+**Search Results:**
+{search_results}
+
+Synthesize the search results into a clear, concise answer. Cite sources when relevant.
+If the results don't answer the question, say so honestly.
+"""
+    
+    prompt = PromptTemplate(template=template, input_variables=["question", "search_results"])
+    chain = prompt | llm
+    
+    response = chain.invoke({
+        "question": user_input,
+        "search_results": search_results
+    })
+    
+    return response.content
+
+# --- Main Entry Point ---
+
+def run_agent(user_input: str, user_id: Optional[str] = None) -> str:
+    """
+    Main agent execution with human-like intent recognition.
+    
+    Flow:
+    1. Classify intent (REFLEX / MEMORY_WRITE / MEMORY_READ / EXTERNAL)
+    2. Route to appropriate handler
+    3. Update user stats
+    4. Return response
+    """
+    logger.info(f"🚀 Agent Started: '{user_input[:50]}...'")
+    
+    # Get or create user profile
+    if not user_id:
+        profile = get_user_profile()
+        user_id = profile["id"]
+    
+    try:
+        # STEP 1: Classify Intent
+        p = processor.InputProcessor()
+        processed_data = p.process(user_input)
+        
+        intent = processed_data.get('intent', 'MEMORY_READ')
+        logger.info(f"   Intent: {intent} (confidence: {processed_data.get('confidence', 0.0)})")
+        
+        # STEP 2: Route to Handler
+        if intent == "REFLEX":
+            response = handle_reflex(processed_data)
+            
+        elif intent == "MEMORY_WRITE":
+            response = handle_memory_write(user_input, processed_data, user_id)
+            
+        elif intent == "MEMORY_READ":
+            response = handle_memory_read(user_input, processed_data, user_id)
+            
+        elif intent == "EXTERNAL":
+            response = handle_external(user_input, processed_data)
+            
+        else:
+            # Fallback
+            logger.warning(f"Unknown intent: {intent}, defaulting to MEMORY_READ")
+            response = handle_memory_read(user_input, processed_data, user_id)
+        
+        # STEP 3: Update Stats
+        update_interaction_stats(user_id)
+        
+        logger.info(f"✅ Response generated successfully")
+        return response
+        
+    except Exception as e:
+        logger.error(f"❌ Agent Error: {e}", exc_info=True)
+        return f"Sorry, I encountered an error: {str(e)}"
+
+# --- Async Streaming Support ---
+
+async def astream_agent(user_input: str, user_id: Optional[str] = None):
     """
     Async Generator for Streaming Responses.
     Yields:
     - "THINKING: <status>"
     - "TOKEN: <text>"
     """
-    logger.info(f"Streaming Agent Started: '{user_input[:50]}...'")
+    logger.info(f"📡 Streaming Agent Started: '{user_input[:50]}...'")
     
-    # Run the "Thinking" phases (Pre-computation)
-    # We can use the graph, but we want to intercept the FINAL node.
-    # Current LangGraph setup calculates final_answer in "response_generator"
+    # Get user profile
+    if not user_id:
+        profile = get_user_profile()
+        user_id = profile["id"]
+    else:
+        profile = get_user_profile(user_id)
     
-    # 1. State Setup
-    initial_state = {
-        "user_input": user_input,
-        "user_id": "",
-        "user_profile": {},
-        "memory_context": "",
-        "intent": "",
-        "processed_data": {},
-        "plan": [],
-        "critique": "None",
-        "final_answer": ""
-    }
-    
-    # 2. Run Intermediary Steps (Thinking)
-    # We invoke the graph but we modify "response_generator" to NOT call invoke() 
-    # but return the prompt inputs.
-    # HOWEVER, modifying the compiled graph on the fly is hard.
-    # ALTERNATIVE: We use the existing graph to get the state *before* generation?
-    # Or simpler: We just run the graph to completion (since it's fast usually except LLM) 
-    # BUT we want to stream the LLM part.
-    
-    # Let's manually run the nodes for the "Thinking" phase to get the PROMPT CONTEXT.
-    # This duplicates logic slightly but ensures streaming works perfectly without refactoring the whole graph to async.
-    
-    yield "THINKING: Identifying Intent..."
-    p_res = profile_loader(initial_state) 
-    initial_state.update(p_res)
-    
-    s_res = semantic_router(initial_state)
-    initial_state.update(s_res)
-    
-    yield f"THINKING: Accessing Memory... ({s_res['intent']})"
-    m_res = memory_retriever(initial_state) # This uses DB, might block slightly
-    initial_state.update(m_res)
-    
-    r_res = reasoning_core(initial_state)
-    initial_state.update(r_res)
-    
-    pl_res = planner_node(initial_state)
-    initial_state.update(pl_res)
-    
-    e_res = executor_node(initial_state)
-    initial_state.update(e_res)
-    
-    # 3. Stream Generation
-    # If executor provided a final answer (e.g. note stored), yield it directly.
-    if initial_state.get("final_answer"):
-        yield f"TOKEN: {initial_state['final_answer']}"
-        return
-
-    yield "THINKING: Synthesizing Response..."
-    
-    # Prepare Prompt (Same logic as response_generator)
-    llm = get_llm()
-    import persona_config
-    from datetime import datetime
-    
-    # Profile might be inside user_profile dict now
-    prof = initial_state["user_profile"] # dict
-    
-    # Safe access to stats
-    loyalty = 50
-    if "stats" in prof:
-        loyalty = prof["stats"].get("loyalty_score", 50)
+    try:
+        # STEP 1: Classify Intent
+        yield "THINKING: Classifying intent..."
+        p = processor.InputProcessor()
+        processed_data = p.process(user_input)
+        intent = processed_data.get('intent', 'MEMORY_READ')
         
-    formatted_prompt = persona_config.JARVIS_SYSTEM_PROMPT.format(
-        user_name=prof.get("name", "User"),
-        current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        reflections=" streaming mode ...", 
-        loyalty_score=loyalty
-    )
-    
-    template = formatted_prompt + """
-    
-    Context/Memories: {context}
-    User Request: {input}
-    
-    Draft a concise, professional response.
-    """
-    prompt = PromptTemplate(template=template, input_variables=["context", "input"])
-    
-    chain = prompt | llm
-    
-    # Stream the tokens
-    async for chunk in chain.astream({
-        "context": initial_state["memory_context"],
-        "input": initial_state["user_input"]
-    }):
-        if chunk.content:
-            yield f"TOKEN: {chunk.content}"
+        yield f"THINKING: Mode - {intent}"
+        
+        # STEP 2: Handle based on intent
+        if intent == "REFLEX":
+            # Instant - no streaming needed
+            response = handle_reflex(processed_data)
+            yield f"TOKEN: {response}"
+            return
+            
+        elif intent == "MEMORY_WRITE":
+            # Store facts - no streaming needed
+            response = handle_memory_write(user_input, processed_data, user_id)
+            yield f"TOKEN: {response}"
+            return
+            
+        elif intent == "EXTERNAL":
+            yield "THINKING: Searching the web..."
+            response = handle_external(user_input, processed_data)
+            # Stream the response token by token
+            for token in response.split():
+                yield f"TOKEN: {token} "
+            return
+            
+        elif intent == "MEMORY_READ":
+            yield "THINKING: Searching my memory..."
+            
+            search_query = processed_data.get('search_query', user_input)
+            memory_context = memory_manager.memory_manager.retrieve_context(search_query, user_id)
+            
+            if not memory_context or memory_context.strip() == "":
+                yield "TOKEN: I don't have any relevant memories about that."
+                return
+            
+            yield "THINKING: Synthesizing response..."
+            
+            # Stream LLM response
+            llm = get_llm()
+            enhanced_prompt = persona_config.JARVIS_SYSTEM_PROMPT.format(
+                user_name=profile["name"],
+                current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                reflections="Context from memory",
+                loyalty_score=profile["stats"].get("loyalty_score", 50)
+            )
+            
+            template = enhanced_prompt + """
 
+**CRITICAL CONTEXT FROM MY MEMORY:**
+{context}
+
+**User Question:** {question}
+
+Use the context to answer naturally and empathetically.
+"""
+            
+            prompt = PromptTemplate(template=template, input_variables=["context", "question"])
+            chain = prompt | llm
+            
+            async for chunk in chain.astream({"context": memory_context, "question": user_input}):
+                if chunk.content:
+                    yield f"TOKEN: {chunk.content}"
+        
+        # Update stats
+        update_interaction_stats(user_id)
+        
+    except Exception as e:
+        logger.error(f"❌ Streaming Error: {e}", exc_info=True)
+        yield f"TOKEN: Error: {str(e)}"
+
+if __name__ == "__main__":
+    # Quick test
+    print("\n" + "="*80)
+    print("AGENT ENGINE TEST")
+    print("="*80 + "\n")
+    
+    test_cases = [
+        "Hi there!",
+        "I bought Sony WH-CH520 headphones",
+        "What headphones do I have?",
+        "Who is the president?",
+    ]
+    
+    for test_input in test_cases:
+        print(f"\n💬 User: {test_input}")
+        print(f"🤖 Jarvis: {run_agent(test_input)}")
+        print("-" * 80)

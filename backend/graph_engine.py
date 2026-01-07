@@ -106,16 +106,19 @@ class GraphEngine:
         using Vector Search + LLM classification.
         """
         print(f"🔗 Graph Engine: Auto-linking '{entity_name}'...")
-        
         with get_db_session() as session:
-            service = database.DatabaseService(session)
+            # 1. Semantic Search using new Memory Manager
+            import memory_manager
+            search_query = f"{entity_name} {description}"
+            # We use the internal search logic to get Note IDs first
+            matches = memory_manager.memory_manager.vector_store.search_memory(query=search_query, top_k=5)
+            note_ids = [m['metadata'].get('note_id') for m in matches if m['metadata'].get('note_id')]
             
-            # 1. Semantic Search: Find relevant existing entities (not notes)
-            # We assume Entity has description vector or we use Name search.
-            # database.py currently embeds NOTES. Entities might not have embeddings unless description is embedded.
-            # Strategy: Search NOTES using entity name, then find entities linked to those notes.
-            
-            relevant_notes = service.hybrid_search(f"{entity_name} {description}", k=5)
+            relevant_notes = []
+            if note_ids:
+                relevant_notes = session.execute(
+                    select(database.Note).where(database.Note.id.in_(note_ids))
+                ).scalars().all()
             
             # Collect potential target entities from these notes
             candidate_entities = set()

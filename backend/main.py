@@ -34,48 +34,6 @@ API_KEY = os.getenv("API_KEY", "secret-key") # Default for dev if not set
 
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
-# --- Fast-Track Logic ---
-
-def is_simple_query(text: str) -> bool:
-    """
-    Detects simple greetings/queries that don't need full agent pipeline.
-    Returns True if this is a simple query that should get instant response.
-    """
-    text_lower = text.lower().strip()
-    
-    simple_patterns = [
-        "hi", "hello", "hey", "sup", "yo",
-        "how are you", "what's up", "wassup",
-        "good morning", "good afternoon", "good evening",
-        "how's it going", "how are things",
-    ]
-    
-    # Check for exact matches or very short variations
-    if text_lower in simple_patterns:
-        return True
-    
-    # Check if input starts with simple greeting (e.g., "hi there", "hello jarvis")
-    for pattern in simple_patterns:
-        if text_lower.startswith(pattern + " ") or text_lower.startswith(pattern + ","):
-            return True
-    
-    # Short queries (< 15 chars) that are likely simple
-    if len(text_lower) < 15 and any(pattern in text_lower for pattern in ["hi", "hey", "hello"]):
-        return True
-        
-    return False
-
-def get_fast_track_response(text: str) -> str:
-    """Returns instant response for simple queries."""
-    greetings = [
-        "Hello Manuth! I'm here and ready to help. What's on your mind?",
-        "Hi there! How can I assist you today?",
-        "Hey Manuth! Good to see you. What do you need?",
-        "Hello! I'm Jarvis, your CEO Brain. How can I help?",
-    ]
-    import random
-    return random.choice(greetings)
-
 # --- Data Models ---
 
 class WebIngestRequest(BaseModel):
@@ -308,29 +266,23 @@ async def chat_stream(request: WebIngestRequest, api_key: str = Depends(verify_a
     """
     Streaming Endpoint for Real-time Chat.
     Yields chunks: "THINKING: ..." or "TOKEN: ..."
-    Implements fast-track for simple queries and timeout handling.
+    Now trusts the Agent Engine's REFLEX path for instant greetings.
     """
     async def event_generator():
         try:
-            # FAST-TRACK: Simple queries bypass agent pipeline
-            if is_simple_query(request.user_input):
-                logger.info(f"Fast-track activated for: '{request.user_input}'")
-                fast_response = get_fast_track_response(request.user_input)
-                yield f"TOKEN: {fast_response}\n"
-                return
+            # Removed redundant is_simple_query check (handled by agent_engine.REFLEX)
             
-            # TIMEOUT PROTECTION: Don't let agent hang forever
+            # TIMEOUT PROTECTION: Increased to 30s as complex reasoning can take time
             try:
-                async with asyncio.timeout(5.0):  # 5 second max for complete response
+                async with asyncio.timeout(30.0): 
                     async for chunk in agent_engine.astream_agent(request.user_input):
                         yield f"{chunk}\n"
             except asyncio.TimeoutError:
-                logger.error(f"Agent timeout after 5s for: '{request.user_input[:50]}'")
-                yield f"TOKEN: Manuth, I'm taking longer than expected. Let me give you a quick response: I'm still processing your request in the background, but I'm here and functional. Could you try rephrasing or breaking down your question?\n"
+                logger.error(f"Agent timeout after 30s for: '{request.user_input[:50]}'")
+                yield f"TOKEN: I'm taking quite a while to process that. Let's try rephrasing? I'm still listening! 👋\n"
                 
         except Exception as e:
             logger.error(f"Stream Error: {e}", exc_info=True)
-            # Professional fallback message
             fallback = "Manuth, I'm having trouble connecting to my primary core, but I'm still here locally. How can I help?"
             yield f"TOKEN: {fallback}\n"
 

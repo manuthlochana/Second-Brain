@@ -7,9 +7,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 import httpx
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, desc
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import PromptTemplate
 
 import database
 from contextlib import contextmanager
@@ -43,7 +45,7 @@ def get_db_session():
         except Exception:
             pass
 
-import telegram_utils # Import our new helper
+import telegram_utils # Import our Telegram helper
 
 class ExecutiveScheduler:
     def __init__(self):
@@ -58,64 +60,22 @@ class ExecutiveScheduler:
             "X-API-Key": API_KEY,
             "Content-Type": "application/json"
         }
-        # In a real scenario, context would be passed. The endpoint simplified takes user_input often.
-        # But we added /proactive/trigger which accepts nothing, just a signal? 
-        # Actually /proactive/trigger calls process_brain_task with hardcoded text.
-        # Ideally we update main.py to accept custom prompt in proactive trigger or just generic check.
         
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(f"{API_URL}/proactive/trigger", headers=headers)
                 if resp.status_code == 200:
                     logger.info("   ✅ Trigger Successful")
-                    # Also notify Telegram proactively
                     await telegram_utils.send_telegram_alert(f"⚡ *Brain Triggered*: {reason}")
                 else:
                     logger.error(f"   ❌ Trigger Failed: {resp.status_code} - {resp.text}")
         except Exception as e:
             logger.error(f"   ❌ Connection Error: {e}")
 
-    def run_pulse(self):
-        """
-        The 1-Minute Heartbeat.
-        Checks for tasks due soon using direct DB access.
-        """
-        # Note: APScheduler runs this in a thread/executor usually if sync, or async if async def.
-        # We make it synchronous DB access but wrapped? Or just DB access.
-        # DB access is blocking. Should ideally be async or run in executor.
-        # For simplicity in this stack using sync sqlalchemy:
-        
-        now = datetime.now()
-        window = now + timedelta(minutes=5)
-        
-        logger.debug("❤️ Pulse Check...")
-        
-        with get_db_session() as session:
-            # Query for PENDING tasks due between now and window
-            tasks = session.execute(
-                select(database.Task).where(
-                    and_(
-                        database.Task.status == 'PENDING',
-                        database.Task.due_date <= window,
-                        database.Task.due_date >= now - timedelta(minutes=1) # Don't re-alert too old?
-                    )
-                )
-            ).scalars().all()
-            
-            if tasks:
-                task_titles = [t.title for t in tasks]
-                logger.info(f"   ⏰ Found urgent tasks: {task_titles}")
-                # We need to trigger the brain. Since this function is not async def here (or is it?),
-                # we can use asyncio.run or ensure the scheduler runs async jobs? 
-                # APScheduler AsyncIOScheduler expects `async def` for awaitable jobs.
-                # But DB access is sync.
-                # Strategy: We will separate DB check (Sync) and Trigger (Async)?
-                # No, better: Make this `async def` and use `await asyncio.to_thread` for DB.
-                pass 
-
     async def run_pulse_async(self):
         """
-        Async wrapper for the pulse.
+        The 1-Minute Heartbeat.
+        Checks for tasks due soon.
         """
         now = datetime.now()
         window = now + timedelta(minutes=5)
@@ -145,6 +105,115 @@ class ExecutiveScheduler:
         except Exception as e:
             logger.error(f"Error in Pulse: {e}")
 
+    async def check_user_engagement(self):
+        """
+        PROACTIVE LONELINESS CHECK.
+        If user hasn't interacted in 6+ hours, send a social check-in message.
+        """
+        logger.info("💭 Checking user engagement...")
+        
+        def get_last_interaction():
+            with get_db_session() as session:
+                # Get user profile stats
+                profile = session.execute(select(database.UserProfile).limit(1)).scalar_one_or_none()
+                if not profile:
+                    return None
+                
+                stats = profile.stats or {}
+                last_interaction_str = stats.get('last_interaction')
+                
+                if not last_interaction_str:
+                    # Check audit log as fallback
+                    latest_log = session.execute(
+                        select(database.AuditLog).order_by(desc(database.AuditLog.created_at)).limit(1)
+                    ).scalar_one_or_none()
+                    
+                    if latest_log:
+                        return latest_log.created_at
+                    return None
+                
+                # Parse ISO format
+                from dateutil import parser
+                return parser.parse(last_interaction_str)
+        
+        try:
+            last_interaction = await asyncio.to_thread(get_last_interaction)
+            
+            if not last_interaction:
+                logger.info("   No interaction history found yet")
+                return
+            
+            # Check if it's been 6+ hours
+            now = datetime.now()
+            hours_since = (now - last_interaction.replace(tzinfo=None)).total_seconds() / 3600
+            
+            logger.info(f"   Last interaction: {hours_since:.1f} hours ago")
+            
+            if hours_since >= 6:
+                # Generate proactive message
+                message = await self.generate_checkin_message()
+                
+                # Send via Telegram
+                await telegram_utils.send_telegram_alert(message)
+                logger.info(f"   ✅ Sent proactive check-in")
+            else:
+                logger.debug(f"   User active recently ({hours_since:.1f}h ago)")
+                
+        except Exception as e:
+            logger.error(f"Error in engagement check: {e}")
+    
+    async def generate_checkin_message(self) -> str:
+        """
+        Uses LLM to generate contextual social check-in based on user's recent topics.
+        """
+        def get_recent_context():
+            with get_db_session() as session:
+                # Get recent notes
+                recent_notes = session.execute(
+                    select(database.Note).order_by(desc(database.Note.created_at)).limit(3)
+                ).scalars().all()
+                
+                return [note.content for note in recent_notes]
+        
+        try:
+            recent_context = await asyncio.to_thread(get_recent_context)
+            
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                return "Machan, quiet day today. Everything okay? 👋"
+            
+            llm = ChatGoogleGenerativeAI(model="gemini-flash-latest", temperature=0.8, google_api_key=api_key)
+            
+            template = """
+You are Jarvis, a smart friend checking in on Manuth who hasn't spoken to you in 6+ hours.
+
+Recent context from memory:
+{context}
+
+Generate a SHORT, CASUAL, FRIENDLY check-in message (1-2 sentences max).
+- Reference recent topics naturally if relevant
+- Use casual Sri Lankan English ("Machan", etc.)
+- Don't be clingy or annoying
+- Show you care but keep it light
+
+Examples:
+- "Machan, quiet day today. Everything okay with the girlfriend? 👋"
+- "All good? Haven't heard from you in a bit."
+- "Hope you're doing alright! Let me know if you need anything."
+"""
+            
+            prompt = PromptTemplate(template=template, input_variables=["context"])
+            chain = prompt | llm
+            
+            context_str = "\n".join(recent_context) if recent_context else "No recent context"
+            response = chain.invoke({"context": context_str})
+            
+            return response.content.strip()
+            
+        except Exception as e:
+            logger.error(f"Failed to generate check-in message: {e}")
+            return "Hey Machan! Just checking in. All good? 👋"
+
     async def run_daily_reflection(self):
         """
         2 AM Reflection. Triggers Graph Inference.
@@ -169,7 +238,15 @@ class ExecutiveScheduler:
             replace_existing=True
         )
         
-        # 2. Daily Reflection: 2:00 AM
+        # 2. Engagement Check: Every hour
+        self.scheduler.add_job(
+            self.check_user_engagement,
+            IntervalTrigger(hours=1),
+            id='engagement_check',
+            replace_existing=True
+        )
+        
+        # 3. Daily Reflection: 2:00 AM
         self.scheduler.add_job(
             self.run_daily_reflection, 
             CronTrigger(hour=2, minute=0), 
