@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import TypedDict, Literal, Dict, Any, List, Optional
 from uuid import uuid4
@@ -17,6 +18,9 @@ from contextlib import contextmanager
 
 # Load environment variables
 load_dotenv()
+
+# Setup logging
+logger = logging.getLogger("CEO_BRAIN.agent_engine")
 
 # --- Helpers ---
 
@@ -66,7 +70,7 @@ class AgentState(TypedDict):
 
 def profile_loader(state: AgentState):
     """Loads user profile and bio-memory."""
-    print("👤 Profile Loader: Fetching user persona...")
+    logger.debug("Profile Loader: Fetching user persona...")
     
     with get_db_session() as session:
         # Singleton pattern for now: Get first profile or create default
@@ -74,7 +78,7 @@ def profile_loader(state: AgentState):
         profile = result.scalar_one_or_none()
         
         if not profile:
-            print("   - Creating new profile for 'Manuth'")
+            logger.info("Creating new profile for 'Manuth'")
             profile = database.UserProfile(
                 name="Manuth",
                 bio_memory={"routines": [], "preferences": {}, "tone": "Professional"},
@@ -97,14 +101,15 @@ def profile_loader(state: AgentState):
 
 def semantic_router(state: AgentState):
     """Uses the existing Semantic Router to classify intent."""
-    print("🧠 Semantic Router: Analyzing input...")
+    logger.debug("Semantic Router: Analyzing input...")
     p = processor.InputProcessor()
     result = p.process(state["user_input"])
+    logger.info(f"Intent detected: {result.get('intent', 'UNKNOWN')}")
     return {"intent": result.get("intent", "UNKNOWN"), "processed_data": result}
 
 def memory_retriever(state: AgentState):
     """Fetches relevant memories + Proactive Task Check."""
-    print("📚 Memory Retriever: Gathering context...")
+    logger.debug("Memory Retriever: Gathering context...")
     
     user_input = state["user_input"]
     user_profile = state["user_profile"]
@@ -148,7 +153,7 @@ def reasoning_core(state: AgentState):
     The 'Critical Friend'. Analyzes logic, safety, and coherence.
     Decides if the user's request is logical based on context.
     """
-    print("🤔 Reasoning Core: Validating logic...")
+    logger.debug("Reasoning Core: Validating logic...")
     
     llm = get_llm()
     profile = state["user_profile"]
@@ -193,10 +198,10 @@ def reasoning_core(state: AgentState):
     
     full_resp = response.content.strip()
     if full_resp.startswith("CRITIQUE:"):
-        print(f"   🛑 Critique generated: {full_resp}")
+        logger.warning(f"Critique generated: {full_resp[:100]}")
         return {"critique": full_resp}
     else:
-        print("   ✅ Logic verified.")
+        logger.debug("Logic verified")
         return {"critique": "None"}
 
 def planner_node(state: AgentState):
@@ -223,7 +228,7 @@ def executor_node(state: AgentState):
     intent = state["intent"]
     processed = state["processed_data"]
     
-    print(f"⚙️ Executor: Running {intent}...")
+    logger.info(f"Executor: Running {intent}...")
     
     # Reusing brain.py logic style but implemented cleanly here
     with get_db_session() as session:
@@ -263,7 +268,7 @@ def response_generator(state: AgentState):
     if state.get("final_answer"):
         return {} 
         
-    print("🗣️ Response Generator: Synthesizing...")
+    logger.debug("Response Generator: Synthesizing...")
     llm = get_llm()
     
     import persona_config
@@ -302,7 +307,7 @@ def reflector_node(state: AgentState):
     Post-interaction reflection.
     Updates User Profile (Bio-Memory) and Loyalty Score.
     """
-    print("🪞 Reflector: Updating Persona...")
+    logger.debug("Reflector: Updating Persona...")
     
     with get_db_session() as session:
         # Load profile object
@@ -360,7 +365,7 @@ workflow.add_edge("reflector", END)
 agent_app = workflow.compile()
 
 def run_agent(user_input: str):
-    print(f"\n🚀 Agent Engine Started: '{user_input}'")
+    logger.info(f"Agent Engine Started: '{user_input[:50]}...'")
     initial_state = {
         "user_input": user_input,
         "user_id": "",
@@ -385,7 +390,7 @@ async def astream_agent(user_input: str):
     - "THINKING: <status>"
     - "TOKEN: <text>"
     """
-    print(f"\n🌊 Streaming Agent Started: '{user_input}'")
+    logger.info(f"Streaming Agent Started: '{user_input[:50]}...'")
     
     # Run the "Thinking" phases (Pre-computation)
     # We can use the graph, but we want to intercept the FINAL node.

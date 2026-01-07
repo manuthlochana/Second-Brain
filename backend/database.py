@@ -68,14 +68,21 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # --- Connection Logic ---
 
 def check_connection():
-    """Simple heartbeat to check if DB is reachable."""
+    """Simple heartbeat to check if DB is reachable with 2-second timeout."""
+    import logging
+    logger = logging.getLogger("CEO_BRAIN.database")
+    
     try:
-        # Create a fresh temp connection
+        # Create a fresh temp connection with timeout
+        # Note: pool_pre_ping helps but explicit timeout is better
         with engine.connect() as conn:
+            # Set statement timeout to 2 seconds
+            conn.execute(text("SET statement_timeout = 2000"))  # milliseconds
             conn.execute(text("SELECT 1"))
+        logger.debug("DB connection check: OK")
         return True
     except Exception as e:
-        print(f"❌ DB Heartbeat Failed: {e}")
+        logger.warning(f"DB Heartbeat Failed: {e}")
         return False
 
 # Retry 3 times, wait 1s, 2s, 4s...

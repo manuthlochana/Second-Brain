@@ -55,23 +55,71 @@ export default function ChatPanel({ onInsertSuccess }: ChatPanelProps) {
         setLoading(true);
 
         try {
-            let response;
             if (mode === "query") {
-                const data = await sendMessage(userMsg);
-                response = data.answer;
+                // STREAMING MODE: Show tokens as they arrive
+                let fullResponse = "";
+                let isThinking = true;
+
+                // Add placeholder message that we'll update
+                setMessages((prev) => [...prev, { role: "assistant", content: "..." }]);
+
+                const { streamMessage } = await import("../lib/api");
+
+                for await (const chunk of streamMessage(userMsg)) {
+                    if (chunk.startsWith("THINKING:")) {
+                        // Update placeholder with thinking status
+                        const thinkingMsg = chunk.substring(10).trim();
+                        setMessages((prev) => {
+                            const newMessages = [...prev];
+                            newMessages[newMessages.length - 1] = {
+                                role: "assistant",
+                                content: `🤔 ${thinkingMsg}...`
+                            };
+                            return newMessages;
+                        });
+                    } else if (chunk.startsWith("TOKEN:")) {
+                        if (isThinking) {
+                            isThinking = false;
+                            fullResponse = "";
+                        }
+                        // Add token to response
+                        const token = chunk.substring(7);
+                        fullResponse += token;
+
+                        // Update message in real-time
+                        setMessages((prev) => {
+                            const newMessages = [...prev];
+                            newMessages[newMessages.length - 1] = {
+                                role: "assistant",
+                                content: fullResponse
+                            };
+                            return newMessages;
+                        });
+                    }
+                }
             } else {
+                // INSERT MODE: Use saveMemory
                 const data = await saveMemory(userMsg);
-                response = `Saved! Extracted ${data.nodes.length} entities.`;
+                const response = `✅ Memory saved successfully!`;
+                setMessages((prev) => [...prev, { role: "assistant", content: response }]);
                 if (onInsertSuccess) onInsertSuccess();
             }
-
-            setMessages((prev) => [...prev, { role: "assistant", content: response }]);
         } catch (error) {
-            setMessages((prev) => [
-                ...prev,
-                { role: "assistant", content: "❌ Error processing request." },
-            ]);
-            console.error(error);
+            console.error("Error:", error);
+            const errorMsg = error instanceof Error
+                ? `❌ Error: ${error.message}`
+                : "❌ Failed to process your request. Please check if the backend is running.";
+
+            setMessages((prev) => {
+                const newMessages = [...prev];
+                // Replace last message if it's placeholder, otherwise add new
+                if (newMessages[newMessages.length - 1]?.content === "...") {
+                    newMessages[newMessages.length - 1] = { role: "assistant", content: errorMsg };
+                } else {
+                    newMessages.push({ role: "assistant", content: errorMsg });
+                }
+                return newMessages;
+            });
         } finally {
             setLoading(false);
         }

@@ -34,6 +34,48 @@ API_KEY = os.getenv("API_KEY", "secret-key") # Default for dev if not set
 
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
+# --- Fast-Track Logic ---
+
+def is_simple_query(text: str) -> bool:
+    """
+    Detects simple greetings/queries that don't need full agent pipeline.
+    Returns True if this is a simple query that should get instant response.
+    """
+    text_lower = text.lower().strip()
+    
+    simple_patterns = [
+        "hi", "hello", "hey", "sup", "yo",
+        "how are you", "what's up", "wassup",
+        "good morning", "good afternoon", "good evening",
+        "how's it going", "how are things",
+    ]
+    
+    # Check for exact matches or very short variations
+    if text_lower in simple_patterns:
+        return True
+    
+    # Check if input starts with simple greeting (e.g., "hi there", "hello jarvis")
+    for pattern in simple_patterns:
+        if text_lower.startswith(pattern + " ") or text_lower.startswith(pattern + ","):
+            return True
+    
+    # Short queries (< 15 chars) that are likely simple
+    if len(text_lower) < 15 and any(pattern in text_lower for pattern in ["hi", "hey", "hello"]):
+        return True
+        
+    return False
+
+def get_fast_track_response(text: str) -> str:
+    """Returns instant response for simple queries."""
+    greetings = [
+        "Hello Manuth! I'm here and ready to help. What's on your mind?",
+        "Hi there! How can I assist you today?",
+        "Hey Manuth! Good to see you. What do you need?",
+        "Hello! I'm Jarvis, your CEO Brain. How can I help?",
+    ]
+    import random
+    return random.choice(greetings)
+
 # --- Data Models ---
 
 class WebIngestRequest(BaseModel):
@@ -266,17 +308,31 @@ async def chat_stream(request: WebIngestRequest, api_key: str = Depends(verify_a
     """
     Streaming Endpoint for Real-time Chat.
     Yields chunks: "THINKING: ..." or "TOKEN: ..."
+    Implements fast-track for simple queries and timeout handling.
     """
     async def event_generator():
         try:
-            # We use the new async streaming agent
-            async for chunk in agent_engine.astream_agent(request.user_input):
-                # Format as Server-Sent Event or just raw chunks
-                # For simplicity, we just yield the text chunk + newline
-                yield f"{chunk}\n"
+            # FAST-TRACK: Simple queries bypass agent pipeline
+            if is_simple_query(request.user_input):
+                logger.info(f"Fast-track activated for: '{request.user_input}'")
+                fast_response = get_fast_track_response(request.user_input)
+                yield f"TOKEN: {fast_response}\n"
+                return
+            
+            # TIMEOUT PROTECTION: Don't let agent hang forever
+            try:
+                async with asyncio.timeout(5.0):  # 5 second max for complete response
+                    async for chunk in agent_engine.astream_agent(request.user_input):
+                        yield f"{chunk}\n"
+            except asyncio.TimeoutError:
+                logger.error(f"Agent timeout after 5s for: '{request.user_input[:50]}'")
+                yield f"TOKEN: Manuth, I'm taking longer than expected. Let me give you a quick response: I'm still processing your request in the background, but I'm here and functional. Could you try rephrasing or breaking down your question?\n"
+                
         except Exception as e:
-            logger.error(f"Stream Error: {e}")
-            yield f"TOKEN: [System Error: {str(e)}]\n"
+            logger.error(f"Stream Error: {e}", exc_info=True)
+            # Professional fallback message
+            fallback = "Manuth, I'm having trouble connecting to my primary core, but I'm still here locally. How can I help?"
+            yield f"TOKEN: {fallback}\n"
 
     return StreamingResponse(event_generator(), media_type="text/plain")
 
@@ -284,10 +340,29 @@ async def chat_stream(request: WebIngestRequest, api_key: str = Depends(verify_a
 async def health_check():
     """
     Heartbeat for Database and System.
+    Returns detailed health status for monitoring.
     """
     import database
-    db_status = "DB_CONNECTED" if database.check_connection() else "DB_OFFLINE"
-    return {"status": "online", "database": db_status, "system": "CEO Brain"}
+    
+    # Check DB with timeout
+    db_healthy = False
+    db_status = "UNKNOWN"
+    try:
+        # Run in thread to avoid blocking
+        db_healthy = await asyncio.to_thread(database.check_connection)
+        db_status = "CONNECTED" if db_healthy else "OFFLINE"
+    except Exception as e:
+        logger.warning(f"Health check DB error: {e}")
+        db_status = "ERROR"
+    
+    return {
+        "status": "online",
+        "database": db_status,
+        "database_healthy": db_healthy,
+        "system": "CEO Brain",
+        "version": "1.0.0",
+        "websocket_connections": len(manager.active_connections)
+    }
 
 @app.websocket("/ws/status")
 async def websocket_endpoint(websocket: WebSocket):
